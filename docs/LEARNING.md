@@ -337,3 +337,57 @@ They protect against different failures. The WAL protects *transactions*: commit
 - Why is a damaged record in an *older* log segment treated differently from one at the end? *(A crash can only tear the very end of the log. Damage earlier means the disk lost data, and truncating there would silently throw away committed transactions, so the server refuses to start and reports it.)*
 - Why do you never hand out an LSN at or below the checkpoint LSN after a crash? *(Pages may already carry LSNs up to it. A new change with a smaller LSN would be wrongly skipped as "already applied" by the next recovery.)*
 
+## M6 — HTTP server, WebSocket, static files, and sign-in
+
+### What it does
+- **`net/http.c`** parses HTTP/1.1 request heads written from scratch, and writes responses with our security headers.
+- **`net/server.c`** runs the server: one accept thread, a bounded queue, a pool of worker threads, and keep-alive (5 s idle, 100 requests per connection).
+- **`net/router.c`** sends each request to static files, an API handler, or the WebSocket upgrade, after common gates.
+- **`net/static.c`** serves the built React app from `web/dist`.
+- **`net/ws.c`** implements WebSocket (RFC 6455) and the *hub* that pushes live events to browsers.
+- **`api/auth.c`** handles join, login, logout, and `/api/me`, plus sessions and rate limits. **`api/app.c`** holds the running server's state, the join code, and a background checkpoint thread.
+- **`main.c`** provides `--init`, `--create-admin`, `--fsck`, and serve.
+
+### The life of one request
+1. The accept thread takes the connection. If 64 are already waiting or being served, it answers `503` at once.
+2. A worker reads bytes until the head is complete (at most 16 KB) and parses it strictly. A bad head is answered with 400, 411, 414, 431, 501, or 505, and the connection is closed.
+3. The body is read only by `Content-Length` and only up to the route's limit (1 MB JSON, 8 MB uploads). A larger body is refused with 413 *before* it is read.
+4. Gates, in order: the server must be ready (else 503); a mutating request must carry `X-NexusSync: 1` (CSRF); the session cookie is checked; the role is checked.
+5. The handler answers. Bytes after the body that belong to the next pipelined request stay in the buffer.
+
+### Why parse so strictly?
+Everything that comes from the network is hostile until proven otherwise. Two examples:
+- **Request smuggling.** Two different `Content-Length` values, or `Transfer-Encoding` next to `Content-Length`, can make a proxy and the server disagree about where one request ends. We refuse both.
+- **Path traversal.** `/%2e%2e/secret` decodes to `/../secret`. Static paths are percent-decoded *first*, then refused if any segment is `.`, `..`, or starts with a dot, or the path contains `\` or `:`. The tests try six such tricks.
+
+### Sessions and passwords
+- Passwords are hashed with PBKDF2-HMAC-SHA256 and 600,000 iterations, so each guess costs about 0.2 s of CPU. A random 16-byte salt per user means two equal passwords give different hashes.
+- A session is 32 random bytes, sent to the browser once as an `HttpOnly; SameSite=Strict` cookie. The server keeps only SHA-256 of the token. Page JavaScript cannot read the cookie (checked in a real browser), and other sites cannot make the browser send it.
+- **Rate limits:** after 5 failed logins for one username, or 20 from one IP address within a minute, the answer is 429 before any hashing happens.
+
+### WebSocket in one paragraph
+The browser asks to upgrade `GET /ws` with a random key. The server proves it understood by returning base64(SHA-1(key + a fixed GUID)); that is the only use of SHA-1 in the project. After that, both sides exchange *frames*. Frames from the browser must be masked: they are XORed with a 4-byte key, so a malicious page cannot make the browser send bytes that a confused proxy might cache. The server sends JSON events like `{"type":"engine.checkpoint","at":...,"data":{...}}`. Only one thread (the broadcaster) writes to sockets, and each client has a bounded queue, so one slow laptop cannot block the others (D-024).
+
+### OS and network concepts
+- **Sockets, blocking I/O with timeouts, thread pools, a bounded producer/consumer queue (OS).**
+- **Graceful shutdown:** waking threads blocked in `accept`/`recv` (socket shutdown, plus a self-connect on macOS).
+- **HTTP/1.1 framing:** `Content-Length`, keep-alive, pipelining, `Expect: 100-continue`.
+- **Web security:** CSRF, the SameSite and HttpOnly cookie flags, Content-Security-Policy, path traversal, cross-site WebSocket hijacking (we check `Origin`).
+- **Password storage:** salt, slow hash, constant-time comparison.
+
+### Files to read
+`net/server.c` (`serve_connection`), `net/http.c` (`nx_http_parse_head`), `net/router.c` (`nx_route`: the gates), `api/auth.c` (`nx_h_login`), `net/ws.c` (`reader_main`, `broadcaster_main`). Tests: `tests/unit/test_net.c`, `tests/integration/test_server.c`.
+
+### Likely examiner questions
+
+**Q1. "How do you stop another website from making a student's browser delete their files?"**
+Three layers. The session cookie is `SameSite=Strict`, so the browser does not attach it to requests that start on another site. Every mutating request must also carry the header `X-NexusSync: 1`; a cross-site form cannot set custom headers, and a cross-site `fetch` with one needs a CORS preflight we never approve. For WebSocket, the server compares the `Origin` header with `Host` and refuses mismatches.
+
+**Q2. "Why not just give each WebSocket a worker thread like HTTP connections?"**
+A WebSocket stays open as long as the tab, so 8 tabs would occupy all 8 workers and normal requests would wait forever. After the upgrade, the socket moves to the hub: a light reader thread per client and one shared broadcaster. Only the broadcaster writes, so two threads never interleave frames on one socket.
+
+### More questions to practise
+- What happens when a request has a 2 MB body to `/api/auth/login`? *(413 is sent before reading the body, and the connection is closed, because the unread body would be misread as the next request.)*
+- Why does an unknown username still run PBKDF2? *(So the response time does not reveal whether the username exists.)*
+- Why does the server keep only a hash of each session token? *(A memory dump or a log line then never contains a token that could be replayed.)*
+

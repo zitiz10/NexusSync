@@ -7,7 +7,7 @@ Platforms: macOS (verified locally on Apple Silicon), Linux and Windows (verifie
 
 Current scope agreed with the team: M1–M7 in this run; M8–M14 in later sessions.
 
-**Status (2026-11-05): M1–M5 done and committed. Next: M6.** See "Handoff notes for M6" below.
+**Status (2026-11-05): M1–M6 done and committed. Next: M7.** See "Handoff notes for M7" below.
 
 ## M1 Scaffold
 - [x] Repo layout per `CLAUDE.md` (plus `server/src/platform/`); module folders fill in from M2
@@ -53,10 +53,13 @@ Current scope agreed with the team: M1–M7 in this run; M8–M14 in later sessi
 - [x] Full suite passes: `python3 scripts/check.py` (70 C tests in 11 executables under ASan+UBSan, web 16/16), `-Werror` clean
 
 ## M6 HTTP, WebSocket, static, auth
-- [ ] Parser tests incl. malformed and oversized input
-- [ ] Join, login, logout, rate limit
-- [ ] WS handshake and events
-- [ ] Serves the built web app
+- [x] Parser tests incl. malformed and oversized input: 20 malformed heads (400/411/417/501/505), NUL, 16 KB head (431), 9 KB target (414), 70 headers (431), every split point, 2,000 random heads under ASan; over the wire: garbage, chunked (411), 19 KB header (431), 2 MB body refused unread (413), bad JSON (400), wrong content type (415), server healthy afterwards; keep-alive and pipelining
+- [x] Join, login, logout, rate limit: bad/rotated join code, weak password, bad username, taken name, CSRF header required, case-insensitive code, lower-cased usernames, admin-only routes, disabled account loses its session; 5 fails per user and 20 per IP give 429 (also blocks join from that IP)
+- [x] WS handshake and events: RFC 6455 accept-key vector, no session (401), foreign Origin (403), version 8 (426), engine.checkpoint delivered, ping/pong, unmasked frame closed with 1002, clean close, server.shutdown on stop; checked again in Chrome (HttpOnly cookie invisible to JS, Origin accepted, event received)
+- [x] Serves the built web app: index (no-cache), hashed assets (immutable), client-side routes, traversal refused (6 variants); real browser loads `web/dist` with no CSP errors
+- [x] `nexusd --init`, `--create-admin`, `--fsck`, serve with SIGTERM shutdown, all run for real; `/api/health` says "recovering" during recovery and other API calls get 503
+- [x] Busy server answers 503 (max_connections); ThreadSanitizer clean on 5 runs of the server tests
+- [x] Full suite: `python3 scripts/check.py` passes (87 C tests in 13 executables under ASan+UBSan, web 16/16), `-Werror` clean
 
 ## M7 Upload, download, concurrency
 - [ ] Manifest, chunks, commit, cancel, resume
@@ -67,17 +70,18 @@ Current scope agreed with the team: M1–M7 in this run; M8–M14 in later sessi
 ## M8–M14
 Not started (later sessions). See SPEC §14.
 
-## Handoff notes for M6 (read before starting)
+## Handoff notes for M7 (read before starting)
 
-**State of the repo.** `main` is clean at the M5 commit. No GitHub remote yet; do not push.
+**State of the repo.** `main` is clean at the M6 commit. No GitHub remote yet; do not push.
 
-**Engine pieces M6/M7 still owe SPEC §8 (they need the server loop):**
-- *Background checkpointer:* a thread that calls `nx_engine_checkpoint` every `checkpoint_interval_s` (60 s) and when dirty frames pass 50%. Today checkpoints only run when a transaction finds the pool over 50% dirty, on `NX_BP_FULL`, and at open/close, so with light traffic the WAL grows until restart.
-- *Events:* `engine.checkpoint` (duration, pages: `nx_engine_get_stats` has `last_checkpoint_ms` / `last_checkpoint_pages`) and `engine.recovery` (`nx_engine_last_recovery`).
-- *`/api/health` while recovering:* recovery runs inside `nx_engine_open` today. To answer `{"status":"recovering"}` the server must start listening before opening the engine, and open it on another thread.
-- *`nexusd --init`, `--fsck`, `--create-admin`:* `main.c` still only does `--version`. `nx_engine_create`, `nx_engine_fsck`, and `nx_engine_add_user` exist; config parsing (`util/config.c`) is needed first. M7's acceptance runs `--fsck`.
+**Done in M6 that M7 builds on.**
+- Routes are a table in `net/router.c` (`ROUTES`): add upload, file, stats routes there; gates (state, CSRF, auth, admin) apply automatically. `nx_route_body_limit` already returns 8 MB for `/api/uploads/*/manifest` and `/chunks`.
+- Path parameters (`/api/files/{id}`) are not supported by the table yet: matching is exact. Add a prefix match with id parsing (bounds-checked) for M7.
+- Downloads must stream: `nx_engine_read_file` with a callback that `plat_send_all`s each block, after sending a head with the file size as `Content-Length`. On `NX_ENGINE_CORRUPT` mid-stream, close the connection (the client sees a short body) and emit `engine.corruption`.
+- Events: `nx_hub_publish(app->hub, type, data_json, audience)`. `stats.updated` (throttled 2/s) still needs a producer.
+- The background thread in `api/app.c` runs checkpoints every `checkpoint_interval_s` and announces every checkpoint.
 
-**Testing hooks.** `util/failpoint.h` crash points and `nx_engine_abandon` are available for M7 tests too (crash during an HTTP upload). The real-process kill test is `scripts/crash_test.py` (M7/M13).
+**Still open from SPEC §8/§12 for later milestones:** `/api/stats`, `/api/blockmap`, `/api/compare`, the rest of `/api/admin/*`, `--rebuild-index` (M12).
 
 ## Open problems
 - **Windows and Linux not yet verified.** `plat_win32.c` and the Linux paths of `plat_posix.c` (getrandom, MSG_NOSIGNAL) have not been compiled. They will be once the repo is pushed to GitHub and CI runs, or when a teammate runs `make -C server test` on a Windows laptop (MSYS2) or Linux.

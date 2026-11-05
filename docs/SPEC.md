@@ -1,6 +1,6 @@
 # NexusSync — technical specification
 
-Version 1.3 (1.3: WAL segment files get a 16-byte header; recovery cut rules and the unsynced `CHECKPOINT` record written down in §5 and §8. 1.1: server portable to Linux, macOS, and Windows; in-repo crypto replaces OpenSSL; scripts in Python. 1.2: `recipes.dat` gains a 16-byte file header; superblock byte offsets and the doublewrite format written down; one transaction mutex replaces the checkpoint rwlock and the 256 index stripes in §9, see DECISIONS D-016. No WAL, chunker, or API changes). Source of truth for behavior, formats, and the API. Section numbers are referenced from `CLAUDE.md`; keep them stable.
+Version 1.4 (1.4: `data/join_code` file; `/api/health` progress shape; static app served while recovering; username and join-code rules written down in §13. 1.3: WAL segment files get a 16-byte header; recovery cut rules and the unsynced `CHECKPOINT` record written down in §5 and §8. 1.1: server portable to Linux, macOS, and Windows; in-repo crypto replaces OpenSSL; scripts in Python. 1.2: `recipes.dat` gains a 16-byte file header; superblock byte offsets and the doublewrite format written down; one transaction mutex replaces the checkpoint rwlock and the 256 index stripes in §9, see DECISIONS D-016. No WAL, chunker, or API changes). Source of truth for behavior, formats, and the API. Section numbers are referenced from `CLAUDE.md`; keep them stable.
 
 ## 1. Goals and non-goals
 
@@ -73,6 +73,7 @@ data/
   recipes/recipes.dat            append-only recipe records
   wal/wal.00000001 ...           log segments (64 MB each)
   doublewrite.bin                checkpoint page staging
+  join_code                      current join code (one line), replaced atomically on rotation
 ```
 
 All integers little-endian, fixed width. Every format starts with a 4-byte magic and a `u16` version.
@@ -199,7 +200,7 @@ Creating, renaming, or deleting a file also needs the directory entry made durab
 3. Scan WAL from `checkpoint_lsn`. Stop at the first record with a bad CRC, short length, or non-consecutive LSN. In the newest segment that is a torn tail; anywhere else it is damage, and the server refuses to start rather than drop committed transactions. Cut the log back to the end of the last `COMMIT` or `CHECKPOINT` record (this also removes a complete transaction that never committed); the next LSN continues from there, and is never at or below `checkpoint_lsn`.
 4. Group records by transaction; redo only committed ones, in LSN order, through the normal apply functions without logging.
 5. Run a checkpoint. Rebuild in-memory indexes. Emit `engine.recovery` with records replayed, transactions redone, duration.
-While recovering, `/api/health` returns `{"status":"recovering","progress":{...}}` and every other endpoint returns 503.
+While recovering, `/api/health` returns `{"status":"recovering","progress":{"phase":"replaying-log","elapsedMs":N}}` and every other `/api` endpoint and `/ws` return 503 with `Retry-After: 5`. The static web app is still served, so the browser can show the recovering state (DECISIONS D-026).
 
 ## 9. Concurrency and lock order
 
@@ -283,7 +284,9 @@ Sessions expire after `upload_session_ttl_s` of inactivity. A retried upload of 
 - Passwords: PBKDF2-HMAC-SHA256 (in-repo, tested against RFC 7914 §11 and RFC 6070-style vectors), 600,000 iterations, 16-byte random salt, 32-byte output; constant-time comparison (`nx_ct_equal`). Minimum length 10. The iteration count is stored per user so it can be raised later.
 - Secure random bytes: `plat_random_bytes()` uses `getrandom()` on Linux, `arc4random_buf()` on macOS, and `BCryptGenRandom()` on Windows. A failure is fatal; never fall back to `rand()`.
 - Sessions: 32 random bytes from `plat_random_bytes`, hex-encoded in the cookie, stored in memory as SHA-256(token) → {user, expiry}. Restarting the server signs everyone out (acceptable, documented).
-- Join code: 8 characters from an unambiguous alphabet, set at `--init`, rotatable by admins. First admin created with `--create-admin` on the server terminal.
+- Join code: 8 characters from `23456789ABCDEFGHJKMNPQRSTUVWXYZ` (no 0/O, 1/I/L), compared case-insensitively in constant time, set at `--init` (random, or `join_code` from the config), stored in `data/join_code`, rotatable by admins. First admin created with `--create-admin` on the server terminal.
+- Usernames: 3–32 characters of `[a-z0-9._-]`, starting with a letter or digit, stored lower-case (input is lower-cased). Display names: 1–64 bytes of valid UTF-8 without control characters or edge spaces. Passwords: 10–256 bytes.
+- Login responses do not reveal whether a username exists: unknown names cost the same PBKDF2 work and get the same 401; `account_disabled` (403) is only reported after a correct password. Wrong join codes count as failures for the IP rate limit.
 - Rate limits: 5 failed logins per username per minute and 20 per IP per minute → 429.
 - Authorization checked in every handler; file access requires owner, shared flag (read only), or admin.
 - Never trust client-supplied hashes: every received block is hashed by the server. Never trust lengths or indices: all bounds-checked.

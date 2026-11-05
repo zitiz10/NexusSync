@@ -173,6 +173,13 @@ clean:
 
 # ---- rules ------------------------------------------------------------------------
 
+# Vendored third-party code is compiled as published, without our warning
+# set (we do not edit it). Before the generic rule: make 3.81 uses the first
+# pattern rule that matches.
+$(OUT)/obj/vendor/%.o: vendor/%.c
+	@mkdir -p $(dir $@)
+	$(CC) -std=c11 -w -Ivendor -MMD -MP $(MODE_CFLAGS) $(CFLAGS) -c $< -o $@
+
 # Test objects first: make 3.81 uses the first pattern rule that matches.
 $(OUT)/obj/tests/%.o: tests/%.c
 	@mkdir -p $(dir $@)

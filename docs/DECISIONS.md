@@ -237,3 +237,39 @@ SPEC §6.4 needs 10 fixture files, about 33 MB in total. Committing them would b
 
 D-013 said a checkpoint taken in the middle of applying a transaction uses "the LSN just before its `BEGIN`". The engine uses `stable_lsn`, the `COMMIT` LSN of the last fully applied transaction. That can be slightly lower (a `CHECKPOINT` record may sit between the two), which only means recovery replays a little more. Replay is idempotent, so lower is always safe; higher would not be.
 
+## D-023 cJSON: vendored as published, parser only (M6)
+
+cJSON v1.7.18 (MIT, `server/vendor/cJSON.c`, `cJSON.h`, `cJSON.LICENSE`) was downloaded from the official GitHub repository with the team's approval. Its `#include`s were checked (C standard headers only). It is compiled **without our warning flags** (`-w`), because we do not edit third-party code and its printer uses `sprintf`, which macOS marks deprecated. It is still compiled under ASan/UBSan/TSan with everything else. We use only the parser; every JSON byte we send is written by `util/json_out.c`.
+
+## D-024 WebSocket clients leave the worker pool (M6)
+
+**Problem.** SPEC §2 has a fixed pool of 8 workers, each serving one connection at a time. A WebSocket stays open for as long as a tab is open, so 8 open tabs would take every worker and the server would stop answering HTTP.
+
+**Chosen.** After the `101` response, the socket is handed to the hub (`net/ws.c`):
+- one small reader thread per client (answers ping, handles close, notices a dead peer after 60 s of silence);
+- one broadcaster thread, the **only** writer to every WebSocket, so frames from two threads can never interleave on one socket;
+- a ticker thread wakes the broadcaster every 250 ms (pings every 25 s). It uses `plat_sleep_ms` because the platform layer has no timed condition wait, and adding one means Windows code we cannot compile here.
+
+At most 64 WebSocket clients (`max_connections`). Closing: the reader queues the close frame and keeps reading; the broadcaster sends it and then shuts the socket down. (The first version shut down in the reader and lost the close frame in a race; the integration test caught it.)
+
+**Alternative rejected.** One thread multiplexing all sockets with `poll()`/`WSAPoll`: fewer threads, but a new platform API and a harder viva explanation, for at most 64 clients.
+
+## D-025 Where the join code lives (M6)
+
+SPEC §3 lists `join_code` as a config key "random on `--init`", and §13 makes it rotatable by admins. A rotation must survive restarts, and rewriting the admin's hand-edited config file is fragile. So the current code lives in `data/join_code` (replaced atomically: write a temp file, fsync, rename, fsync the directory). The config key only seeds `--init`.
+
+## D-026 Static files are served while recovering (M6)
+
+SPEC §8 says every endpoint other than `/api/health` returns 503 while recovering. We apply that to `/api/*` and `/ws`, but still serve the web app's static files: otherwise a browser opened during recovery shows its own error page instead of NexusSync's "recovering" state (DESIGN, M11). Static files do not touch the engine.
+
+## D-027 Test-only PBKDF2 iteration count (M6)
+
+Real logins use 600,000 iterations (SPEC §13), about 0.2 s each. The integration tests sign in hundreds of times, so they set `app->pbkdf2_iters = 1000` **in code**. There is deliberately no config key for it, so a deployment cannot weaken password hashing by accident. The count is stored per user, so accounts created by tests simply carry their own count.
+
+## D-028 What failed logins reveal (M6)
+
+- An unknown username still costs one full PBKDF2 run and returns the same 401 as a wrong password, so timing does not reveal which usernames exist.
+- `account_disabled` is only reported after the correct password.
+- Rate limits are checked *before* hashing, so a flood of guesses cannot burn the server's CPU.
+- Known limit: `/api/auth/join` answers `username_taken`, which reveals that a name exists to anyone holding the join code. Acceptable inside one lab.
+

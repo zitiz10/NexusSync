@@ -1,0 +1,24 @@
+# NexusSync server configuration (SPEC §3). Copy to nexussync.conf and edit.
+# Paths are relative to the directory nexusd is started from.
+
+listen = 0.0.0.0:8080            # address and port
+data_dir = ./data                # storage root (created by --init)
+web_root = ./web/dist            # the built web app (cd web && npm run build)
+
+workers = 8                      # HTTP worker threads
+max_connections = 64             # more connections get 503
+
+chunker = cdc                    # cdc or fixed, for new uploads
+container_size = 4194304         # bytes before a container is sealed
+buffer_pool_pages = 4096         # 4 KB frames (16 MB)
+checkpoint_interval_s = 60
+
+gc_grace_s = 3600                # unreferenced blocks younger than this are kept
+verify_on_read = true            # re-hash blocks during download
+verify_on_commit = true          # re-read and hash the whole file at commit
+
+upload_session_ttl_s = 1800
+session_ttl_s = 43200            # sign-in lasts 12 hours
+
+# join_code = ABCD2345           # optional first join code for --init (8 characters,
+                                 # from 23456789ABCDEFGHJKMNPQRSTUVWXYZ); random if unset
