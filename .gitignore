@@ -1,0 +1,17 @@
+data/
+*.pem
+nexussync.conf
+demo.env
+eval/datasets/
+demo-data/
+server/build/
+cli/build/
+web/node_modules/
+web/dist/
+web/screenshots/
+web/test-results/
+web/playwright-report/
+__pycache__/
+.DS_Store
+*.o
+*.d

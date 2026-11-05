@@ -1,0 +1,329 @@
+# NexusSync — technical specification
+
+Version 1.0. Source of truth for behavior, formats, and the API. Section numbers are referenced from `CLAUDE.md`; keep them stable.
+
+## 1. Goals and non-goals
+
+Goals: store files with block-level deduplication across all users; send only missing blocks over the network; never lose or corrupt committed data, including after `kill -9` or power loss; show real engine state live; run on one Linux machine serving browsers on the same LAN.
+
+Non-goals: see `PRODUCT.md` "Out of scope".
+
+Correctness invariants (tests and `--fsck` check all of them):
+- **I1** Every block referenced by a committed file recipe exists in the index and its bytes in a container hash to its key.
+- **I2** Every index entry's refcount equals the number of references to that block across all committed, non-deleted file recipes (a block appearing twice in one file counts twice).
+- **I3** Downloading a committed file returns exactly the bytes uploaded (whole-file SHA-256 matches the stored value).
+- **I4** After recovery, the state equals the state after the last committed transaction before the crash. Uncommitted work leaves only unreferenced blocks or orphan container bytes, which cleanup reclaims.
+
+## 2. Architecture
+
+```
+ Browser (any laptop)                              nexusd (Linux server laptop)
+ ┌──────────────────────┐   HTTP/1.1 + WebSocket   ┌────────────────────────────────────────┐
+ │ React app            │◄────────────────────────►│ net: accept thread → worker pool       │
+ │ Web Worker:          │                          │      http parser, router, ws, static   │
+ │  chunk (CDC) + SHA-256│                         │ api: auth files uploads compare stats  │
+ └──────────────────────┘                          │      admin events                      │
+ CLI `nexus` (C) ─────────────── HTTP ────────────►│ engine:                                │
+                                                   │  chunkers, sha                         │
+                                                   │  block index (extendible hashing)      │
+                                                   │  buffer pool (clock)                   │
+                                                   │  containers (append-only, 4 MB)        │
+                                                   │  catalog (users, files) + recipes      │
+                                                   │  WAL, checkpoint, recovery             │
+                                                   │  gc/compaction, integrity scan         │
+                                                   └───────────────┬────────────────────────┘
+                                                                   │ files on local SSD
+                                                                   ▼  data/
+```
+
+One process, `nexusd`. Threads: one accept thread, a fixed worker pool (default 8) that handles one connection at a time each, one WebSocket broadcaster, one background thread for checkpoints, cleanup, and scans.
+
+## 3. Configuration
+
+`nexussync.conf` (INI style, `key = value`, `#` comments). Example in `nexussync.conf.example`.
+
+| Key | Default | Meaning |
+|---|---|---|
+| `listen` | `0.0.0.0:8080` | Address and port |
+| `data_dir` | `./data` | Storage root |
+| `web_root` | `./web/dist` | Static files |
+| `workers` | `8` | Worker threads |
+| `max_connections` | `64` | Further connections get 503 |
+| `chunker` | `cdc` | `cdc` or `fixed` for new uploads (stored per file) |
+| `container_size` | `4194304` | Bytes before a container is sealed |
+| `buffer_pool_pages` | `4096` | 4 KB frames (16 MB) |
+| `checkpoint_interval_s` | `60` | Also triggered when dirty frames exceed 50% |
+| `gc_grace_s` | `3600` | Unreferenced blocks younger than this are kept |
+| `verify_on_read` | `true` | Re-hash blocks during download |
+| `verify_on_commit` | `true` | Re-read and hash the whole file at commit |
+| `upload_session_ttl_s` | `1800` | Idle upload sessions expire |
+| `session_ttl_s` | `43200` | Login sessions (12 h) |
+| `join_code` | random on `--init` | Required to create an account |
+
+## 4. On-disk layout
+
+```
+data/
+  superblock.a  superblock.b     two alternating copies, newest valid wins
+  containers/c00000001.dat ...   append-only block containers
+  index/dir.bin                  extendible-hashing directory
+  index/buckets.bin              bucket pages (4096 bytes each)
+  catalog/users.tbl              slotted pages
+  catalog/files.tbl              slotted pages
+  recipes/recipes.dat            append-only recipe records
+  wal/wal.00000001 ...           log segments (64 MB each)
+  doublewrite.bin                checkpoint page staging
+```
+
+All integers little-endian, fixed width. Every format starts with a 4-byte magic and a `u16` version.
+
+## 5. Formats
+
+**Superblock (4096 bytes):** magic `NXSB`, version, `u64 seq`, `u64 checkpoint_lsn`, `u64 next_file_id`, `u32 next_user_id`, `u32 next_container_id`, `u32 active_container_id`, `u32 index_global_depth`, `u32 bucket_page_count`, chunker params (`u32 min, avg, max`, `u32 mask_s, mask_l`, `u32 gear_seed_lo, gear_seed_hi`), `u64 created_at`, `u32 crc32` over all preceding bytes. Writing alternates `.a` and `.b`; recovery uses the valid copy with the higher `seq`.
+
+**Container file:** header 64 bytes (magic `NXSC`, version, `u32 id`, `u64 created_at`, padding). Then block records: `u8 hash[32]`, `u32 len`, `u32 crc32(data)`, `data[len]`. The hash is stored inline so the index can be rebuilt from containers alone (`--rebuild-index`). Sealed when appending the next record would exceed `container_size`.
+
+**Bucket page (4096 bytes):** header 16 bytes (`u64 page_lsn`, `u16 local_depth`, `u16 count`, `u32 crc32`). Entries of 52 bytes: `u8 hash[32]`, `u32 container_id`, `u32 offset`, `u32 len`, `u32 refcount`, `u32 created_at` (seconds since epoch, needed for the cleanup grace period). Capacity 78 entries per page.
+
+**Directory (`dir.bin`):** magic `NXDR`, version, `u32 global_depth`, then `2^global_depth` × `u32 page_id`, then `u32 crc32`. Rewritten whole at checkpoint via the doublewrite path.
+
+**Catalog tables:** 4096-byte slotted pages: header (`u64 page_lsn`, `u16 slot_count`, `u16 free_offset`, `u32 crc32`), slot array (`u16 offset`, `u16 length`, length 0 = free), records growing from the end.
+- `users` record: `u32 id`, `u8 role` (0 student, 1 admin), `u8 status` (0 active, 1 disabled), `u16 username_len`, username, `u16 display_len`, display name, `u8 salt[16]`, `u8 pw_hash[32]`, `u32 pbkdf2_iters`, `u64 created_at`, `u64 last_seen`.
+- `files` record: `u64 id`, `u32 owner_id`, `u16 name_len`, name (UTF-8, max 255 bytes), `u32 version`, `u64 prev_version_id` (0 if none), `u64 size`, `u32 chunk_count`, `u8 chunker`, `u64 recipe_offset`, `u32 recipe_len`, `u8 file_sha256[32]`, `u64 bytes_sent`, `u64 created_at`, `u8 flags` (bit0 shared, bit1 deleted).
+
+**Recipe record (`recipes.dat`):** magic `NXRC`, `u64 file_id`, `u32 chunk_count`, then `chunk_count` × (`u8 hash[32]`, `u32 len`), then `u32 crc32`. Appended and `fsync`ed before the commit record that references it.
+
+**WAL record:** `u64 lsn`, `u64 txn_id`, `u8 type`, `u32 payload_len`, payload, `u32 crc32` over all preceding fields of the record. Types:
+
+| Type | Payload |
+|---|---|
+| `BEGIN` | none |
+| `CHUNK_ADD` | hash[32], container u32, offset u32, len u32, created_at u32 |
+| `REF_INC` / `REF_DEC` | hash[32], `u32 count` |
+| `FILE_ADD` | full files record |
+| `FILE_UPDATE` | file id, flags |
+| `FILE_DEL` | file id |
+| `USER_ADD` / `USER_UPDATE` | full users record |
+| `BLOCK_FREE` | hash[32] |
+| `BLOCK_MOVE` | hash[32], new container u32, new offset u32 |
+| `CONTAINER_DROP` | container id |
+| `COMMIT` | none |
+| `CHECKPOINT` | checkpoint_lsn |
+
+## 6. Chunking and hashing
+
+### 6.1 Fixed-size chunker
+4096-byte blocks; the last block holds the remainder.
+
+### 6.2 Content-defined chunker (FastCDC style, 32-bit Gear hash)
+Parameters (part of the format; changing them is a format version bump): `MIN = 2048`, `AVG = 4096`, `MAX = 16384`, `MASK_S = 0xFFFC0000` (14 bits, used before `AVG`), `MASK_L = 0xFFC00000` (10 bits, used after `AVG`).
+
+```
+cut(buf, n):
+  if n <= MIN: return n
+  normal = min(AVG, n); limit = min(MAX, n)
+  h = 0 (uint32); i = MIN
+  while i < normal: h = (h << 1) + GEAR[buf[i]]; if (h & MASK_S) == 0: return i + 1; i++
+  while i < limit:  h = (h << 1) + GEAR[buf[i]]; if (h & MASK_L) == 0: return i + 1; i++
+  return limit
+```
+
+All arithmetic is unsigned 32-bit (in TypeScript use `>>> 0` after every step). `GEAR` is 256 `uint32` values generated by `scripts/gen_gear.py` with SplitMix64 from seed `0x4E657875735379` taking the upper 32 bits of each output; the script writes both `server/src/engine/gear_table.h` and `web/src/engine/gearTable.ts`. Report the measured average chunk size in the evaluation (it will be somewhat above 4 KB because of `MIN`).
+
+### 6.3 Hashing
+SHA-256 for blocks and whole files. Server and CLI use OpenSSL EVP. The browser uses `hash-wasm` inside a Web Worker, because `crypto.subtle` is only available in secure contexts and LAN clients connect over plain HTTP. Files are read with `Blob.slice` in 8 MB windows; the chunker carries state across windows; memory stays bounded.
+
+### 6.4 Parity tests
+`server/tests/fixtures/` holds 10 deterministic test files (sizes 0, 1, 2047, 2048, 4096, 16385, 1 MB, 10 MB random, 10 MB text, and the 10 MB text with 300 bytes inserted at offset 5000) and the expected cut points and hashes produced by the C code. Vitest asserts the TypeScript chunker produces identical results. Any mismatch blocks the build.
+
+## 7. Storage engine
+
+### 7.1 Containers
+One active container receives appends under a mutex. Each append writes the record, and blocks are made durable in batches: the uploader collects up to 64 accepted blocks or 50 ms, calls `fsync` on the container once, then logs one `CHUNK_ADD` transaction for the batch. On startup the active container's append offset is its file length; trailing bytes from an interrupted write are orphan bytes, reclaimed by compaction.
+
+### 7.2 Block index: extendible hashing
+Directory of `2^global_depth` page ids, indexed by the top `global_depth` bits of the block hash. Lookup: one directory read (in memory) and one bucket page read (through the buffer pool). Insert into a full bucket: if `local_depth < global_depth`, split the bucket into two pages by the next bit and repoint directory slots; otherwise double the directory first. Buckets never merge (documented choice). Start with `global_depth = 4`.
+
+### 7.3 Buffer pool
+`buffer_pool_pages` frames of 4096 bytes, Clock replacement, per-frame latch and pin count. **No-steal:** a dirty frame is never written outside a checkpoint. When dirty frames exceed 50% of the pool, wake the checkpointer; if no frame can be evicted, the requesting thread waits for the checkpoint to finish. Track hits and misses for the Engine screen.
+
+### 7.4 Catalog and recipes
+Users and files live in slotted-page tables through the same buffer pool, so they share the checkpoint and recovery path. On startup, build in-memory indexes: users by id and username; files by id, by owner, and by (owner, name) for versions. Recipes are append-only; deleted files leave dead recipe bytes, reclaimed by a stretch-goal compaction.
+
+### 7.5 Engine API (internal, `include/engine.h`)
+`engine_open`, `engine_close`, `engine_lookup(hash)`, `engine_store_blocks(batch)`, `engine_commit_file(meta, chunks)`, `engine_delete_file(id)`, `engine_read_file(id, writer_cb)`, `engine_stats`, `engine_checkpoint`, `engine_gc`, `engine_scan`, `engine_fsck`. The HTTP layer never touches files directly.
+
+## 8. Transactions, logging, checkpoint, recovery
+
+Model: **redo-only logging, no-steal, no-force**. Changes to pages are applied in the buffer pool only after the transaction's `COMMIT` record is durable. Because dirty pages reach disk only during checkpoints, the on-disk pages always equal the state at the last checkpoint, and recovery is "replay committed transactions after the checkpoint". No undo is needed.
+
+Transactions:
+- **Store blocks:** for each verified new block: `CHUNK_ADD` (refcount 0). `COMMIT`. Container `fsync` happens before the WAL append.
+- **Commit file:** append and `fsync` the recipe; lock the involved index stripes in ascending order; verify every chunk exists (missing → abort with 409 and the list); log `BEGIN`, one `REF_INC` per distinct hash with its count, `FILE_ADD`, `COMMIT`; `fsync` the WAL; apply to pages; unlock.
+- **Delete file:** `FILE_DEL`, `REF_DEC` per distinct hash, `COMMIT`.
+- **User changes:** `USER_ADD` or `USER_UPDATE`, `COMMIT`.
+- **Cleanup:** `BLOCK_FREE` for unreferenced blocks older than `gc_grace_s` and not declared by any open upload session; `COMMIT`.
+- **Compaction:** copy live blocks of containers below 50% live data into a fresh container, `fsync`, log `BLOCK_MOVE`s and `CONTAINER_DROP`, `COMMIT`; delete the old container file only after the next checkpoint.
+
+**Commit point:** a transaction is committed once its `COMMIT` record is written and the WAL is `fsync`ed. Group commit (one `fsync` for several waiting transactions) is a stretch goal.
+
+**Checkpoint:**
+1. Take the checkpoint rwlock exclusively (writers hold it shared for the duration of applying a transaction).
+2. Record `L` = last durable LSN. Collect all dirty frames and the directory.
+3. Write them to `doublewrite.bin` (page id, file, bytes, crc each, then a trailer with count and crc); `fsync`.
+4. Write each page in place; `fsync` each file.
+5. Write the next superblock copy with `checkpoint_lsn = L`; `fsync`.
+6. Mark `doublewrite.bin` empty; `fsync`. Mark frames clean. Delete WAL segments entirely below `L`.
+7. Release the lock. Log a `CHECKPOINT` record and emit an `engine.checkpoint` event with duration and pages written.
+
+**Recovery (on every start):**
+1. Load the newest valid superblock.
+2. If `doublewrite.bin` holds a complete, valid batch, copy its pages in place and `fsync` (repairs a torn checkpoint).
+3. Scan WAL from `checkpoint_lsn`. Stop at the first record with a bad CRC or short length and truncate there (torn tail).
+4. Group records by transaction; redo only committed ones, in LSN order, through the normal apply functions without logging.
+5. Run a checkpoint. Rebuild in-memory indexes. Emit `engine.recovery` with records replayed, transactions redone, duration.
+While recovering, `/api/health` returns `{"status":"recovering","progress":{...}}` and every other endpoint returns 503.
+
+## 9. Concurrency and lock order
+
+Locks, always acquired in this order and released in reverse:
+1. Checkpoint rwlock (shared by writers, exclusive by checkpoint)
+2. Catalog lock (rwlock over users and files tables and in-memory indexes)
+3. Index directory rwlock (exclusive only to split or double)
+4. Index stripe mutexes, 256 stripes chosen by `hash[0]`, always taken in ascending stripe order
+5. Buffer pool frame latches (short, never held across I/O except the page read itself)
+6. Active container mutex
+7. WAL mutex
+
+Rules: never hold a stripe while waiting on network I/O; never call into the HTTP layer while holding engine locks; the WebSocket broadcaster receives events through a bounded queue. Two uploads storing the same new block: the second to take the stripe finds the entry and discards its copy (counts as deduplicated). Document any new lock here before adding it.
+
+## 10. Cleanup, integrity, and tools
+
+- **Cleanup** (`POST /api/admin/gc`, and nightly at 02:00): free unreferenced blocks as in §8, then compact containers below 50% live. Reports bytes reclaimed.
+- **Integrity scan** (`POST /api/admin/scan`, nightly after cleanup): read every live block, verify CRC and SHA-256; failures are reported per block with the files affected. Progress events every 1%.
+- **Verify on read:** downloads re-hash each block; on mismatch the download aborts and an `engine.corruption` event is emitted.
+- **`--fsck`:** offline full check of I1–I3 by recomputing refcounts from all recipes and comparing, reading every referenced block, and checking every file's whole-file hash. Exit code 0 only if all pass.
+- **`--rebuild-index`:** rebuild the index from container records and refcounts from recipes. Last-resort repair and a good viva talking point.
+
+## 11. Network layer
+
+**HTTP/1.1, written from scratch** in `server/src/net/`:
+- Blocking sockets, `SO_REUSEADDR`, accept thread pushes connections onto a bounded queue served by the worker pool. Keep-alive with a 5 s idle timeout and at most 100 requests per connection.
+- Request line and headers capped at 16 KB total; bodies require `Content-Length` (reject `Transfer-Encoding: chunked` requests with 411). Body limits: 1 MB for JSON, 8 MB for binary upload endpoints.
+- Responses use `Content-Length`; downloads stream from the engine through a writer callback with the length known from the file record.
+- Static files from `web_root`: decode and normalize the path, reject `..` and NUL, serve correct MIME types, `Cache-Control: public, max-age=31536000, immutable` for hashed assets in `/assets/`, `no-cache` for `index.html`. Unknown non-API paths return `index.html` (client-side routing).
+- Security headers on every response: `X-Content-Type-Options: nosniff`, `Referrer-Policy: no-referrer`, `X-Frame-Options: DENY`, and a CSP allowing only `'self'` plus `'wasm-unsafe-eval'` for scripts (needed by `hash-wasm`).
+
+**WebSocket** at `/ws` (RFC 6455): validate `Upgrade`, `Connection`, version 13; `Sec-WebSocket-Accept` = base64(SHA-1(key + `258EAFA5-E914-47DA-95CA-C5AB0DC85B11`)). Require masked client frames. Server sends text frames with JSON events, answers ping with pong, handles close. Requires a valid session cookie. Each client has a bounded outgoing queue (drop the oldest `stats.updated` first if full).
+
+## 12. HTTP API
+
+All JSON uses camelCase. Errors: status code plus `{"error":{"code":"...","message":"..."}}`. Every mutating request must include header `X-NexusSync: 1` (CSRF guard together with the SameSite cookie).
+
+**Health:** `GET /api/health` (no auth) → `{"status":"ok"|"recovering","version":"1.0.0","progress":{...}?}`
+
+**Auth**
+- `POST /api/auth/join` `{username, displayName, password, joinCode}` → 201 user; sets session cookie.
+- `POST /api/auth/login` `{username, password}` → 200 user; sets `nx_session` cookie (`HttpOnly; SameSite=Strict; Path=/; Max-Age=43200`).
+- `POST /api/auth/logout` → 204.
+- `GET /api/me` → `{id, username, displayName, role}`.
+
+**Files** (students see their own plus shared; admins see all)
+- `GET /api/files?q=&sort=newest|name|size|shared&scope=mine|shared&cursor=&limit=50` → `{items:[File], nextCursor}`
+- `GET /api/files/{id}` → File with `versions:[{id, version, size, createdAt}]` and `blocks:{total, uniqueToFile, shared}`
+- `GET /api/files/{id}/content` → bytes, `Content-Disposition: attachment; filename*=UTF-8''...`
+- `PATCH /api/files/{id}` `{shared: bool}` (owner or admin)
+- `DELETE /api/files/{id}` (owner or admin) → 204
+
+File object: `{id, name, version, prevVersionId, ownerId, ownerName, size, chunkCount, chunker, sha256, bytesSent, reusedPercent, createdAt, shared}`.
+
+**Uploads**
+1. `POST /api/uploads` `{name, size, sha256, chunker:"cdc", chunkCount, versionOf?}` → `{uploadId, manifestPageSize: 8192, maxChunkBody: 8388608}`. If a file with the same name exists for this user, the new file becomes its next version unless `versionOf: null` is sent explicitly.
+2. `POST /api/uploads/{id}/manifest?page=N` body `application/octet-stream`: up to 8192 entries of (`hash[32]`, `u32 len`) → `{need:[indices within the page]}`. Server records the declared hashes in the session (protects them from cleanup).
+3. `POST /api/uploads/{id}/chunks` body: repeated (`u32 index`, `u32 len`, `data`). Server checks each `len` matches the manifest, hashes the data, compares to the manifest hash, rejects mismatches individually → `{accepted:[...], rejected:[{index, reason:"hash_mismatch"|"length_mismatch"|"unknown_index"}]}`. Clients send up to 3 chunk requests in parallel.
+4. `POST /api/uploads/{id}/commit` → 201 File plus `{stats:{chunks, newChunks, bytesSent, reusedPercent}}`. Errors: 409 `missing_chunks` with indices (client sends them and commits again), 422 `file_hash_mismatch` (when `verify_on_commit` finds the rebuilt file differs from `sha256`), 507 `disk_full`.
+5. `DELETE /api/uploads/{id}` cancels.
+Sessions expire after `upload_session_ttl_s` of inactivity. A retried upload of the same file finds most blocks present, so resuming costs little.
+
+**Compare:** `GET /api/compare?a={fileId}&b={fileId}&mode=fixed|cdc&from=0&count=32` → `{mode, totals:{a:{chunks,bytes}, b:{chunks,bytes, reused, sentBytes}}, firstDifference, window:{from, a:[Block], b:[Block]}, minimap:[0|1 per b block, run-length encoded]}`. Block: `{index, size, sha256, reused, matchIndex|null, stored:{containerId, offset, sharedBy}|null}`. For `mode=cdc` with CDC-stored files, results come from recipes directly. For `fixed`, the server rebuilds both files in memory streams, chunks them at 4 KB, and computes matches by hash; `stored` is null. Cache results per (a, b, mode) for 5 min.
+
+**Stats:** `GET /api/stats` → `{logicalBytes, physicalBytes, ratio, writesSkippedBytes, networkSavedBytes, files, users, uploadsThisWeek, wal:{lsn, recordsSinceCheckpoint, sizeBytes, lastCheckpointAt, lastCheckpointMs}, index:{entries, globalDepth, buckets, avgFillPercent, bufferHitRate, dirtyPages}, containers:{count, bytes, reclaimableBytes, liveHistogram:[10 buckets]}, integrity:{lastScanAt, verified, failures}, cleanup:{pendingBytes, nextRunAt}, uptimeS}`. Students receive the global storage numbers plus `mine:{files, bytes, reusedPercent}`; engine internals are admin-only.
+
+**Block map:** `GET /api/blockmap?tiles=384` → `{tileBytes, tiles:[level 0–4 per tile]}`; `GET /api/blockmap?tiles=384&file={id}` → `{tiles:[indices containing the file's blocks]}`. Computed by walking the index in storage order, cached and recomputed at most every 2 s after changes.
+
+**Admin** (role admin): `GET /api/admin/users`, `POST /api/admin/users/{id}` `{role?, status?}`, `GET /api/admin/join-code`, `POST /api/admin/join-code/rotate`, `POST /api/admin/checkpoint`, `POST /api/admin/gc`, `POST /api/admin/scan`, `GET /api/admin/events?limit=200`, `GET /api/admin/recoveries`, `GET /api/admin/addresses` (LAN IPv4 addresses with port, for the connect QR codes).
+
+**WebSocket events** `{type, at, data}`: `stats.updated` (throttled to 2/s), `upload.started`, `upload.progress` `{uploadId, fileName, phase, done, total, newTiles:[...]}`, `upload.committed`, `upload.failed`, `file.deleted`, `file.updated`, `engine.checkpoint`, `engine.gc`, `engine.scan`, `engine.corruption`, `engine.recovery`, `server.shutdown`. Non-admins receive events for their own and shared files; for other users' uploads they receive only aggregate `stats.updated` and anonymous `newTiles`.
+
+## 13. Authentication and security
+
+- Passwords: PBKDF2-HMAC-SHA256 via OpenSSL, 600,000 iterations, 16-byte random salt, 32-byte output; constant-time comparison (`CRYPTO_memcmp`). Minimum length 10. The iteration count is stored per user so it can be raised later.
+- Sessions: 32 random bytes from `RAND_bytes`, hex-encoded in the cookie, stored in memory as SHA-256(token) → {user, expiry}. Restarting the server signs everyone out (acceptable, documented).
+- Join code: 8 characters from an unambiguous alphabet, set at `--init`, rotatable by admins. First admin created with `--create-admin` on the server terminal.
+- Rate limits: 5 failed logins per username per minute and 20 per IP per minute → 429.
+- Authorization checked in every handler; file access requires owner, shared flag (read only), or admin.
+- Never trust client-supplied hashes: every received block is hashed by the server. Never trust lengths or indices: all bounds-checked.
+- No secrets in the repo, logs, or URLs. Session cookie not marked `Secure` because the LAN uses HTTP; documented limitation.
+- Known side channel: a client can infer a block exists from the `need` list. Documented; proof-of-ownership challenges are a stretch goal.
+
+## 14. Build order
+
+Built in one autonomous run, in this order. Each step ends only when its checks pass under ASan and have been executed, not just written. Progress is tracked in `docs/PROGRESS.md` (see `CLAUDE.md`). The engine comes first because everything on screen depends on it being correct.
+
+| # | Step | Acceptance checks |
+|---|---|---|
+| M1 | Scaffold | Repo layout, Makefile targets (`all`, `debug`, `asan`, `tsan`, `test`), test runner, `nexusd --version`; Vite app builds; `scripts/check.sh` runs both test suites; PROGRESS, DECISIONS, LEARNING created |
+| M2 | Chunkers and hashing | Fixed and CDC chunkers, gear generator, SHA wrapper; fixture cut points stable; TS chunker passes parity tests |
+| M3 | Containers, buffer pool, index | Insert and look up 1M random hashes with splits and directory doubling; Clock eviction tests; property test against an in-memory map |
+| M4 | Catalog, recipes, engine API | In-process put/get/delete round-trip of 200 random files including duplicates and edited copies; I1–I3 checked by `engine_fsck` |
+| M5 | WAL, checkpoint, recovery | Torn-tail, torn-checkpoint (doublewrite), and crash-between-steps tests; in-process crash loop of 20 iterations passes |
+| M6 | HTTP, WebSocket, static, auth | Parser tests including malformed and oversized input; join, login, logout, rate limit; WS handshake and events; serves the built web app |
+| M7 | Upload, download, concurrency | Manifest, chunks, commit, cancel, resume; 8 concurrent CLI clients uploading overlapping files, then `--fsck` clean; downloads match SHA-256 |
+| M8 | Frontend foundation | Tokens, self-hosted fonts, shell, nav, status indicator, sign-in and join, API client, WS client with reconnect; screenshots checked against DESIGN |
+| M9 | Overview, Files, upload tray | Real data everywhere; block field, linked hover, live tile pulses; files list, drawer, versions, delete with undo; full upload flow with all phases and failures |
+| M10 | Compare versions | Pickers, fixed and CDC modes, window, minimap, hover partners, details, animations; matches DESIGN §8.5 |
+| M11 | Engine and Users screens, system states | All Engine sections with live data and actions; users admin; offline, recovering, session-ended, empty, loading states |
+| M12 | Cleanup, compaction, integrity | Cleanup respects grace period and open sessions; compaction survives a crash mid-way; scan detects an injected corrupt byte; nightly schedule |
+| M13 | CLI, demo tooling, evaluation tooling | `nexus` CLI; `crash_test.sh 50` passes against the real server; `make_demo_data.py`, `demo_reset.sh`; `run_eval.py` produces tables and charts when pointed at a dataset folder (run it on the generated demo data as a smoke test) |
+| M14 | Polish and final report | Polish pass across the app; every screen and state screenshotted at three sizes and checked per DESIGN §13; Playwright end-to-end passes against a real server; final report in PROGRESS |
+
+**Done by humans, not in the run:** the Phase 1 proposal (problem, measured duplication in real lab data, architecture diagram, mockups); collecting real lab datasets and running the evaluation on them; testing on real laptops and the real network per `docs/DEMO.md`; reviewing the code and studying `docs/LEARNING.md` for the viva.
+
+**What to show at each phase:** Phase 1, the proposal package above. Phase 2, the working system: identical upload sends nothing, edited CSV sends little, `kill -9` and recovery with `--fsck`, download hash check. Phase 3, the full demo script in `docs/DEMO.md` with evaluation results on real data.
+
+## 15. Testing strategy
+
+- **Unit (C):** chunkers, SHA, CRC32, page and record serialization round-trips, extendible hashing (splits, doubling, many collisions in top bits), buffer pool (pin, evict, dirty rules), WAL encode/decode, torn-record detection, superblock A/B selection.
+- **Property tests (C):** random sequences of put, delete, checkpoint, and simulated crash against a simple in-memory model; compare all observable state.
+- **Integration (C + HTTP):** spin up `nexusd` on a temp dir; drive the API with the CLI and a small C test client; malformed requests; auth rules; upload resume; 409 and 422 paths.
+- **Concurrency:** 8–16 clients uploading overlapping and identical files at once; run under ThreadSanitizer in the separate `make tsan` target before the final report.
+- **Crash:** `scripts/crash_test.sh N`: start server, start random uploads and deletes, `kill -9` at a random moment between 0.1 and 3 s, restart, `--fsck` must pass, every committed file must download with a matching hash. Repeat N times.
+- **Corruption:** flip a byte in a container; scan and verify-on-read must detect it and name affected files.
+- **Frontend:** Vitest for the chunker parity, formatting helpers, and state reducers; Playwright for join → upload → second identical upload shows "nothing sent" → download → compare → delete with undo. Run Playwright against a real `nexusd`, not mocks.
+- **Design QA:** Impeccable critique and audit per screen (CLAUDE.md).
+
+## 16. Evaluation plan
+
+Datasets (collected with permission, stored in `eval/datasets/`, never committed): lab PDFs and manuals; assignment submissions; datasets (CSV); source code trees as tar; VM or ISO images; edited versions of text and CSV files; zip and docx files to show the limitation.
+
+Baselines: plain storage (sum of sizes), gzip per file, whole-file deduplication (SHA-256 of whole file), fixed 4 KB block dedup, NexusSync CDC dedup.
+
+Metrics: deduplication ratio and bytes saved per category; network bytes sent for second and edited uploads; upload and download throughput (MB/s) on the LAN and on localhost; index lookups per second; checkpoint duration; recovery time versus WAL size; average and distribution of CDC chunk sizes; CPU time spent hashing and chunking.
+
+Output: `eval/results/*.csv` and charts (matplotlib, PNG and SVG), plus a summary table for the report. State hardware, dataset sizes, and how many runs were averaged.
+
+## 17. CLI `nexus`
+
+```
+nexus --server http://192.168.1.20:8080 login <username>
+nexus put <file> [--fixed] [--new-file]
+nexus get <id|name> [-o out]
+nexus ls [--shared]
+nexus rm <id>
+nexus stats
+```
+Session token stored in `~/.nexussync/session` with mode 0600. Output is plain text; `--json` for scripts.
+
+## 18. Stretch goals (only after M14 is done)
+
+Group commit; `epoll`-based networking; B+ tree index over file names; mDNS name `nexussync.local`; proof-of-ownership challenges for declared blocks; HTTP range downloads; compressing unique blocks with zstd after deduplication; recipe file compaction; a second server as a read-only replica.
