@@ -1,6 +1,6 @@
 # NexusSync — technical specification
 
-Version 1.1 (1.1: server portable to Linux, macOS, and Windows; in-repo crypto replaces OpenSSL; scripts in Python. No on-disk, WAL, chunker, or API format changes). Source of truth for behavior, formats, and the API. Section numbers are referenced from `CLAUDE.md`; keep them stable.
+Version 1.2 (1.1: server portable to Linux, macOS, and Windows; in-repo crypto replaces OpenSSL; scripts in Python. 1.2: `recipes.dat` gains a 16-byte file header; superblock byte offsets and the doublewrite format written down; one transaction mutex replaces the checkpoint rwlock and the 256 index stripes in §9, see DECISIONS D-016. No WAL, chunker, or API changes). Source of truth for behavior, formats, and the API. Section numbers are referenced from `CLAUDE.md`; keep them stable.
 
 ## 1. Goals and non-goals
 
@@ -91,7 +91,11 @@ All integers little-endian, fixed width. Every format starts with a 4-byte magic
 - `users` record: `u32 id`, `u8 role` (0 student, 1 admin), `u8 status` (0 active, 1 disabled), `u16 username_len`, username, `u16 display_len`, display name, `u8 salt[16]`, `u8 pw_hash[32]`, `u32 pbkdf2_iters`, `u64 created_at`, `u64 last_seen`.
 - `files` record: `u64 id`, `u32 owner_id`, `u16 name_len`, name (UTF-8, max 255 bytes), `u32 version`, `u64 prev_version_id` (0 if none), `u64 size`, `u32 chunk_count`, `u8 chunker`, `u64 recipe_offset`, `u32 recipe_len`, `u8 file_sha256[32]`, `u64 bytes_sent`, `u64 created_at`, `u8 flags` (bit0 shared, bit1 deleted).
 
-**Recipe record (`recipes.dat`):** magic `NXRC`, `u64 file_id`, `u32 chunk_count`, then `chunk_count` × (`u8 hash[32]`, `u32 len`), then `u32 crc32`. Appended and `fsync`ed before the commit record that references it.
+**Recipe file (`recipes.dat`):** a 16-byte file header (magic `NXRF`, `u16` version 1, `u16 0`, 8 zero bytes), then records. **Recipe record:** magic `NXRC`, `u64 file_id`, `u32 chunk_count`, then `chunk_count` × (`u8 hash[32]`, `u32 len`), then `u32 crc32` over the record's preceding bytes. Appended and `fsync`ed before the commit record that references it. A torn record at the tail is left in place (it is unreachable) and new records follow it.
+
+**Superblock byte offsets:** magic 0, version 4, `seq` 8, `checkpoint_lsn` 16, `next_file_id` 24, `next_user_id` 32, `next_container_id` 36, `active_container_id` 40, `index_global_depth` 44, `bucket_page_count` 48, chunker params 52–79, `created_at` 80, `crc32` 88 (over bytes 0–87), zero padding to 4096. Copy `.a` holds odd `seq`, `.b` even.
+
+**Doublewrite file (`doublewrite.bin`):** header 16 bytes (magic `NXDW`, `u16` version, `u16 0`, `u64 checkpoint_lsn`); entries (`u32 file_id`, `u32 page_no`, `page[4096]`, `u32 crc32` over the entry's preceding 4104 bytes); trailer 12 bytes (magic `NXDT`, `u32 count`, `u32 crc32` over every preceding byte of the file). File ids: 0 `buckets.bin`, 1 `users.tbl`, 2 `files.tbl`, 3 `dir.bin`. Empty (length 0) when no checkpoint is in progress. A batch that is not complete and valid is ignored.
 
 **WAL record:** `u64 lsn`, `u64 txn_id`, `u8 type`, `u32 payload_len`, payload, `u32 crc32` over all preceding fields of the record. Types:
 
@@ -161,7 +165,7 @@ Model: **redo-only logging, no-steal, no-force**. Changes to pages are applied i
 
 Transactions:
 - **Store blocks:** for each verified new block: `CHUNK_ADD` (refcount 0). `COMMIT`. Container `fsync` happens before the WAL append.
-- **Commit file:** append and `fsync` the recipe; lock the involved index stripes in ascending order; verify every chunk exists (missing → abort with 409 and the list); log `BEGIN`, one `REF_INC` per distinct hash with its count, `FILE_ADD`, `COMMIT`; `fsync` the WAL; apply to pages; unlock.
+- **Commit file:** append and `fsync` the recipe; take the transaction mutex; verify every chunk exists (missing → abort with 409 and the list); log `BEGIN`, one `REF_INC` per distinct hash with its count, `FILE_ADD`, `COMMIT`; `fsync` the WAL; apply to pages; unlock.
 - **Delete file:** `FILE_DEL`, `REF_DEC` per distinct hash, `COMMIT`.
 - **User changes:** `USER_ADD` or `USER_UPDATE`, `COMMIT`.
 - **Cleanup:** `BLOCK_FREE` for unreferenced blocks older than `gc_grace_s` and not declared by any open upload session; `COMMIT`.
@@ -179,7 +183,7 @@ Creating, renaming, or deleting a file also needs the directory entry made durab
 **Commit point:** a transaction is committed once its `COMMIT` record is written and the WAL is `fsync`ed. Group commit (one `fsync` for several waiting transactions) is a stretch goal.
 
 **Checkpoint:**
-1. Take the checkpoint rwlock exclusively (writers hold it shared for the duration of applying a transaction).
+1. Take the transaction mutex (writers hold it for the duration of logging and applying a transaction, so a checkpoint never sees half of an unrelated transaction; a checkpoint started *during* an apply because the pool is full uses the LSN before that transaction's `BEGIN`, D-013).
 2. Record `L` = last durable LSN. Collect all dirty frames and the directory.
 3. Write them to `doublewrite.bin` (page id, file, bytes, crc each, then a trailer with count and crc); `fsync`.
 4. Write each page in place; `fsync` each file.
@@ -198,19 +202,21 @@ While recovering, `/api/health` returns `{"status":"recovering","progress":{...}
 ## 9. Concurrency and lock order
 
 Locks, always acquired in this order and released in reverse:
-1. Checkpoint rwlock (shared by writers, exclusive by checkpoint)
+1. Transaction mutex (one transaction is logged and applied at a time; checkpoints take it too). Replaces v1.1's checkpoint rwlock and 256 index stripes (DECISIONS D-016)
 2. Catalog lock (rwlock over users and files tables and in-memory indexes)
-3. Index directory rwlock (exclusive only to split or double)
-4. Index stripe mutexes, 256 stripes chosen by `hash[0]`, always taken in ascending stripe order
+3. Index directory rwlock (shared for lookups and applies, exclusive only to split or double)
+4. *(removed in v1.2: index stripes)*
 5. Buffer pool frame latches (short, never held across I/O except the page read itself)
 6. Active container mutex
 7. WAL mutex
 
-Leaf locks (taken last, never while acquiring another lock, held only for short in-memory work): the buffer pool's page-table mutex (taken inside pin/unpin/mark-dirty while a frame latch may be held; it may do the page read on a miss), the container read-handle cache mutex, and the log output mutex.
+Leaf locks (taken last, never while acquiring another lock, held only for short work): the buffer pool's page-table mutex (taken inside pin/unpin/mark-dirty while a frame latch may be held; it may do the page read on a miss), the container read-handle cache mutex, the recipe append mutex (held across the recipe write and its `fsync`), and the log output mutex. Engine statistics are atomic counters, not locked.
 
-Index operations never wait for a split while holding a stripe: an insert into a full bucket returns `NX_EXT_NEED_SPLIT`, the caller releases its stripes and the shared directory lock, takes the directory lock exclusively, splits, and retries. A full buffer pool returns `NX_BP_FULL` instead of blocking; the caller releases its locks and runs a checkpoint (DECISIONS D-013).
+Readers (block lookups, downloads, `GET` handlers) never take the transaction mutex, except to run a checkpoint after `NX_BP_FULL`, and then they hold no other lock. Uploads append blocks to containers without the transaction mutex and take it only to log their `CHUNK_ADD` batch.
 
-Rules: never hold a stripe while waiting on network I/O; never call into the HTTP layer while holding engine locks; the WebSocket broadcaster receives events through a bounded queue. Two uploads storing the same new block: the second to take the stripe finds the entry and discards its copy (counts as deduplicated). Document any new lock here before adding it.
+Index operations never wait for a split while holding the shared directory lock: an insert into a full bucket returns `NX_EXT_NEED_SPLIT`, the caller releases the shared lock, takes it exclusively, splits, and retries. A split is not logged and keeps the old page LSN on both pages (D-018). A full buffer pool returns `NX_BP_FULL` instead of blocking; the caller releases its locks and runs a checkpoint (DECISIONS D-013).
+
+Rules: never hold an engine lock while waiting on network I/O; never call into the HTTP layer while holding engine locks; the WebSocket broadcaster receives events through a bounded queue. Two uploads storing the same new block: the second `CHUNK_ADD` to be applied finds the entry and is a no-op; its container copy becomes orphan bytes reclaimed by compaction, and the block counts as deduplicated. Document any new lock here before adding it.
 
 ## 10. Cleanup, integrity, and tools
 

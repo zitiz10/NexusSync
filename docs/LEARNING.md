@@ -200,4 +200,75 @@ No-steal forbids writing them out early, so `pin` returns `NX_BP_FULL` and the c
 ### More questions to practise
 - What is the difference between a pin and a latch? *(A pin says "do not evict this frame". A latch says "do not touch these bytes while I am reading or writing them".)*
 - Why does doubling the directory not move any entries? *(Each old slot becomes two slots pointing at the same page. Pages split only when they are full.)*
-- Why is the new page's LSN copied from the old page during a split? *(The new page holds entries copied from the old page, so it already contains every change the old page had. Redo must not apply those changes again.)*
+- Why do both pages keep the *old* page's LSN after a split? *(A split only moves entries; it is not a logged change. The new page already contains every change the old page had, so redo must not apply those again. And neither page may take the LSN of the record that caused the split, or redo would skip that record when it is retried. That exact bug was in the M3 code and was found in M4: DECISIONS D-018.)*
+
+## M4 — Catalog, recipes, and the engine API
+
+### What it does
+- **The catalog** (`engine/catalog.c`) stores users and files in two tables of 4 KB *slotted pages*, read and written through the same buffer pool as the index. At startup every record is decoded into memory, so queries never touch disk.
+- **Recipes** (`engine/recipe.c`) are the "how to rebuild this file" lists: for each block in order, its SHA-256 and length. They are appended to `recipes.dat` and fsynced before the file is committed.
+- **The engine** (`engine/engine.c`, API in `include/engine.h`) puts containers, index, catalog, and recipes together into *transactions*. It is the only door to storage: store blocks, commit a file, read a file, delete a file, add a user, checkpoint, fsck, stats.
+- **Checkpoints** write every dirty page through a *doublewrite* file (`engine/checkpoint.c`), then a new *superblock* copy (`engine/superblock.c`).
+
+### A slotted page
+```
+ 0        16                                                     4096
+ | header | slot 0 | slot 1 | slot 2 | → free space ←  | rec 2 | rec 0 | rec 1 |
+            (offset,length) pairs grow right            records grow left
+```
+- A record is found by (page, slot). The slot array says where its bytes are, so records can move inside the page (compaction) without anything outside noticing.
+- Deleting sets the slot's length to 0. The hole is reused later; when contiguous space runs out, the page is compacted (live records pushed to the end).
+- User records are padded to a fixed size, so updating a user is always an overwrite in place.
+
+### How a file is committed
+1. The client has already sent the missing blocks (`nx_engine_store_blocks`): each block is re-hashed (the client is never trusted), appended to the active container, the container is fsynced, then one `CHUNK_ADD` record per new block is logged with refcount 0.
+2. `nx_engine_commit_file` checks the chunk list adds up to the file size, checks every chunk exists, and (with `verify_on_commit`) reads the whole file back and compares its SHA-256.
+3. The recipe is appended and fsynced.
+4. Under the transaction mutex: check again that every chunk exists, then log `REF_INC` (one per *distinct* block, with a count) and `FILE_ADD`, and apply them to the pages.
+
+Delete is the mirror: `FILE_DEL` plus `REF_DEC` per distinct block. A block appearing twice in one file is counted twice (invariant I2).
+
+### One apply function for everything
+Every change is a log record (`engine/logrec.h`), and `apply_record` in `engine.c` is the only code that changes pages. Normal operation calls it right after logging; recovery (M5) will call it again for records found in the WAL. So the code that runs at 3 a.m. after a crash is the same code that runs all day. In M4 the "log" only hands out LSNs; M5 adds the WAL file and its fsync at the marked point.
+
+Applying is safe to repeat:
+- catalog changes are *idempotent by key* (adding file 42 again does nothing; deleting a missing file does nothing);
+- index changes are skipped when the page's LSN shows they are already there (D-013).
+
+### fsck: checking the invariants
+`nx_engine_fsck` recomputes everything from the recipes and compares:
+- **I1:** every referenced block is in the index, and its bytes hash to its key;
+- **I2:** every index entry's refcount equals the number of references in all recipes;
+- **I3:** every file, rebuilt block by block, matches its stored SHA-256.
+
+The tests damage each one on purpose (flip a container byte, bump a refcount, commit a file with the wrong hash) and check fsck names the problem.
+
+### Measured (ASan build, macOS)
+- 200 random CSV-like files (up to 300 KB): 30 exact duplicates sent **0 bytes**; 70 edited copies (a few bytes inserted, deleted, or overwritten) sent **11%** of their bytes; 15 new versions.
+- With a 48-frame pool, the run needed 125 checkpoints, many in the middle of applying a transaction, and fsck stayed clean before deletes, after deletes, after reopening, and after deleting everything (all refcounts back to 0).
+- 6 threads uploading overlapping files at once through a 16-frame pool: 40+ checkpoints, ThreadSanitizer clean, fsck clean.
+
+### OS and DBMS concepts
+- **Slotted pages (DBMS):** the standard layout for variable-length records.
+- **Transactions and the commit point (DBMS):** what is durable when, and why the recipe and container bytes must be fsynced *before* the log says the file exists.
+- **Redo-only logging with idempotent apply (DBMS):** a change can be replayed any number of times safely.
+- **Doublewrite (DBMS, used by InnoDB):** protects against torn pages, a page half-written when power fails.
+- **A/B superblocks (OS file systems):** two copies written alternately, so one is always valid.
+- **Mutual exclusion and lock ordering (OS):** one transaction mutex keeps applies in LSN order; readers avoid it (D-016).
+
+### Files to read
+`include/engine.h` (the API), then `engine/engine.c` in this order: `nx_engine_commit_file`, `log_and_apply`, `apply_record`, `checkpoint_locked`, `nx_engine_fsck`. Then `engine/catalog.c` (`page_insert`, `compact_page`). Tests: `tests/unit/test_engine.c` (the 200-file round trip), `test_catalog.c`, `test_persist.c`.
+
+### Likely examiner questions
+
+**Q1. "What stops two students uploading the same file at the same time from corrupting the refcounts?"**
+Both may store the same new block, but the index records it once: the second `CHUNK_ADD` finds the entry and does nothing, and that student's copy is just unused bytes in a container (compaction reclaims them). The refcount changes happen only at commit, under the transaction mutex, one transaction at a time, so each commit adds its own references exactly once. The concurrency test runs 6 threads with overlapping files and then checks every refcount with fsck.
+
+**Q2. "Why write the recipe before the commit record, and what if the server crashes in between?"**
+The commit record points at the recipe by offset. If the recipe were written after, a crash could leave a committed file whose recipe does not exist: the file would be lost. Written before, a crash in between leaves a recipe nothing points at. It wastes a few bytes but is harmless, because recipes are only reached through committed file records.
+
+### More questions to practise
+- Why are user records padded to a fixed size? *(An update is then an overwrite in place on one page. A longer record might not fit, and moving it would need extra logic during redo.)*
+- Why check that chunks exist twice during a commit? *(The first check, without the lock, gives a fast 409 before anything is written. The second, under the transaction mutex, is the one that counts: cleanup also runs under that mutex, so no block can disappear between the check and the `REF_INC`.)*
+- What does the doublewrite file protect against that the WAL does not? *(A torn page. Redo needs a readable page to apply changes to; if a crash leaves a page half old, half new, its CRC fails and there is nothing to redo onto. The complete copy in the doublewrite file restores it.)*
+

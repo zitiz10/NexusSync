@@ -132,7 +132,7 @@ SPEC §6.4 needs 10 fixture files, about 33 MB in total. Committing them would b
 1. **Page LSN (as in ARIES).**
    - Every page stores the LSN of the last WAL record applied to it.
    - During redo, a change is skipped when the page's LSN is already at or beyond the record's LSN (`NX_EXT_SKIPPED`). That makes replaying a record idempotent.
-   - A split copies the old page's LSN to the new page, because the new page holds state copied from the old one.
+   - A split keeps the old page's LSN on *both* pages, because a split is structural and contains no logged change. (Corrected in M4, see D-018: the M3 code copied the LSN to the new page but then stamped both pages with the current record's LSN.)
 2. **The pool never blocks.** When no clean, unpinned frame is free, `pin` returns `NX_BP_FULL`. The caller runs a checkpoint and retries.
 
 **Consequence for M5.**
@@ -160,3 +160,54 @@ SPEC §6.4 needs 10 fixture files, about 33 MB in total. Committing them would b
 **Half-created container.** If the highest container has no valid header, it was created but its header never became durable. No committed record can be inside it (the record fsync would also have made the header durable), so it is rewritten.
 
 **Read handles.** Reads go through a cache of 64 open handles with reference counts. macOS allows only 256 open files per process by default, and a large store has thousands of containers.
+
+## D-015 Small format additions in M4 (spec 1.2)
+
+**Question.** SPEC §4 says every format starts with a magic and a version, but the §5 recipe format described only records, and the superblock and doublewrite formats gave fields without byte positions.
+
+**Chosen.**
+- `recipes.dat` gets a 16-byte file header (`NXRF`, version 1). A recipe file without a durable header cannot hold a committed record (the record's fsync would have made the header durable too), so a file shorter than 16 bytes is rewritten on open.
+- The superblock byte offsets and the doublewrite layout are now written in SPEC §5.
+
+**Alternatives rejected.** A version field inside every recipe record: 2 bytes per file for no benefit, because all records of one file share one format.
+
+## D-016 One transaction mutex instead of a checkpoint rwlock plus 256 index stripes (M4)
+
+**Problem.** Page-LSN redo (D-013) is only correct if committed transactions are applied to pages in LSN order. With the v1.1 lock plan (writers share the checkpoint rwlock, and lock only the index stripes they touch), two commits could apply in parallel. A page could then show LSN 120 while missing the change of LSN 118, and recovery would skip 118.
+
+**Options.**
+1. *One transaction mutex* held while assigning LSNs, appending to the WAL, fsyncing, and applying. Checkpoints take it too.
+2. *Keep stripes, order applies afterwards:* commits log in parallel but apply strictly in LSN order through a sequencer queue.
+3. *Per-record LSNs inside each index entry* instead of per page.
+
+**Chosen: 1.** The work under the mutex is short: one WAL fsync and in-memory page changes. Everything slow happens outside it: hashing, container appends and their fsync, recipe appends, whole-file verification, and all reads. With one applier, stripes protect nothing, so they are removed (SPEC §9 v1.2). If commit throughput ever matters, group commit (a stretch goal) batches the fsync of several waiting transactions under the same mutex.
+
+**Consequences.**
+- Two uploads storing the same new block both append it to a container. The second `CHUNK_ADD` finds the entry and is a no-op; its copy is orphan bytes for compaction. The upload is told the block was deduplicated.
+- A transaction whose apply fails after the commit point leaves pages and log disagreeing. The engine then refuses further writes until restart, where recovery (M5) replays the transaction.
+
+## D-017 Meaning of the "deleted" flag (M4)
+
+**Question.** The files record has a `deleted` flag (bit 1), and there is also a `FILE_DEL` record. What does each mean?
+
+**Chosen.**
+- `FILE_UPDATE` setting the deleted flag is a *soft delete*: the file is hidden in the UI (delete with undo, DESIGN), but it keeps its recipe references, so its blocks stay alive.
+- `FILE_DEL` is the real delete: the record is removed and each block's refcount is decremented.
+- I2 in fsck therefore counts references from every catalog record, flagged or not.
+
+**Alternative rejected.** Decrementing refcounts at soft delete and incrementing them again on undo: two transactions instead of one, and an undo could fail if cleanup freed a block in between.
+
+## D-018 A bucket split keeps the old page LSN (M4 bug fix in M3 code)
+
+**Bug found while building the engine.** `nx_exthash_split` stamped both pages with the LSN of the record being applied. During redo, the record that needed the split is retried after the split; it then saw `page_lsn >= its LSN` and was skipped as "already applied". The index entry was silently lost. M3's tests never redid an insert across a split, so they passed.
+
+**Fix.** A split is structural and is not logged; both pages keep the old page's LSN. The split no longer takes an LSN argument. New test `test_redo_insert_across_split` fails on the old code and passes now.
+
+## D-019 Catalog lookups by name are linear scans (M4)
+
+**Question.** SPEC §7.4 lists in-memory indexes for users by username, files by owner, and files by (owner, name). Hash maps or linear scans?
+
+**Chosen.** Files by id use a hash map (every download and delete needs it). Lookups by username, by owner, and by (owner, name) scan the in-memory array. A lab has hundreds of users and a few thousand files; scanning 10,000 decoded records takes microseconds and the code stays short.
+
+**When to change.** If a store grows past about 100,000 files, add hash maps keyed by username and by (owner, name). The function signatures in `catalog.h` already hide how lookups work.
+

@@ -7,7 +7,7 @@ Platforms: macOS (verified locally on Apple Silicon), Linux and Windows (verifie
 
 Current scope agreed with the team: M1–M7 in this run; M8–M14 in later sessions.
 
-**Status (2026-11-05): M1–M3 done and committed. The first session stopped here at the team's request. Next session: start at M4.** See "Handoff notes for M4" below.
+**Status (2026-11-05): M1–M4 done and committed. Next session: start at M5.** See "Handoff notes for M5" below.
 
 ## M1 Scaffold
 - [x] Repo layout per `CLAUDE.md` (plus `server/src/platform/`); module folders fill in from M2
@@ -34,10 +34,14 @@ Current scope agreed with the team: M1–M7 in this run; M8–M14 in later sessi
 - [x] Property test: 200k random insert/lookup/ref/move/remove ops through a 64-frame pool match an in-memory model; 4-thread insert+lookup test; full suite clean under ASan+UBSan and TSan
 
 ## M4 Catalog, recipes, engine API
-- [ ] Slotted-page catalog (users, files)
-- [ ] Recipes append + read
-- [ ] Round-trip of 200 random files including duplicates and edited copies
-- [ ] I1–I3 checked by `engine_fsck`
+- [x] Slotted-page catalog (users, files): round trips, 3,000 files with deletes and hole reuse, reopen, idempotent apply, 20k random ops through an 8-frame pool against a model (6/6)
+- [x] Recipes append + read: reopen, CRC/id/count/length mismatches refused, torn tail harmless; plus superblock A/B fallback, doublewrite round trip and torn batches, WAL payloads (4/4)
+- [x] Round-trip of 200 random files including duplicates and edited copies: byte-exact reads, 30 duplicates sent 0 bytes, edited CDC copies sent 11.2%, versions linked, 57 deletes, reopen, delete-all; 48-frame pool forced 125 checkpoints (many mid-transaction)
+- [x] I1–I3 checked by `engine_fsck`: clean at every stage above; injected damage detected for each (flipped container byte → I1, bumped refcount → I2, wrong whole-file hash → I3)
+- [x] Error paths: missing chunks (409 list), bad block/file hash (422), malformed commits; users add/duplicate/update/persist
+- [x] 6 concurrent upload threads with overlapping content through a 16-frame pool (40+ checkpoints): fsck clean, ThreadSanitizer clean (3 runs)
+- [x] Full suite: `python3 scripts/check.py` passes (61 C tests in 9 executables under ASan+UBSan, web 16/16), `-Werror` clean in asan and release builds
+- [x] Bug fixed in M3 code: index split stamped pages with the current record's LSN, so redo lost the insert that caused a split (D-018, regression test added)
 
 ## M5 WAL, checkpoint, recovery
 - [ ] WAL encode/decode, torn-tail truncation
@@ -60,42 +64,20 @@ Current scope agreed with the team: M1–M7 in this run; M8–M14 in later sessi
 ## M8–M14
 Not started (later sessions). See SPEC §14.
 
-## Handoff notes for M4 (read before starting)
+## Handoff notes for M5 (read before starting)
 
-**State of the repo.**
-- `main` is clean at the M3 commit.
-- `python3 scripts/check.py` passes on macOS: 45 C tests under ASan+UBSan, plus web parity tests. `make -C server tsan` passes too (about 2 min).
-- No GitHub remote yet. The team will create the repo later and push all history at once, so do not push anywhere.
+**State of the repo.** `main` is clean at the M4 commit. No GitHub remote yet; do not push.
 
-**Unfinished M4 draft (not committed, not tested).** It is saved in a git stash:
-`git stash list` shows `M4 draft (untested): catalog.c/.h slotted pages + util/hmap.c/.h`. Restore it with `git stash pop`, or drop it and start fresh.
-- It holds `server/src/util/hmap.[ch]`: open-addressing maps for 32-byte and u64 keys.
-- It holds `server/src/engine/catalog.[ch]`: users and files tables in slotted pages through the buffer pool, in-memory indexes rebuilt at startup, idempotent "logical redo" apply functions, and user records zero-padded to a fixed size so updates are always in place.
-- It was never compiled. Review it before use.
+**Where M5 plugs in.**
+- `engine.c: log_and_apply` has a marked point (`---- M5: WAL append + fsync here`). LSNs are currently handed out in memory (`e->next_lsn`); the WAL must take over that counter, write BEGIN, the records, and COMMIT (types and payloads in `engine/logrec.h`, txn id = BEGIN's LSN), and fsync before the apply loop runs.
+- `apply_record(e, type, payload, len, lsn, redo)` is already redo-capable. Recovery replays committed records with `redo = true`; nothing else changes pages.
+- `checkpoint_locked(e, lsn)` already does SPEC §8 steps 2–5 (doublewrite, in-place writes, fsyncs, superblock, clear). M5 adds: delete WAL segments entirely below the checkpoint LSN, log a `CHECKPOINT` record, the 50%-dirty background trigger, and the `engine.checkpoint` event.
+- Doublewrite repair already runs at the start of `nx_engine_open` (recovery step 2). M5 must add the torn-checkpoint *tests* (crash between staging, in-place writes, and the superblock).
+- Stats counters (`logical`, `physical`, `unique_blocks`, `saved`) are only correct when changes are applied once; after redo, recompute them with `init_stats` instead of trusting increments.
+- Next ids after recovery: `max(superblock, catalog max + 1, max id seen in replayed records + 1)` for files and users (open already does the first two).
+- `e->broken` is set if an apply fails after the commit point; writes are refused until restart.
 
-**Design decided in session 1 for M4/M5.** Not yet written up in DECISIONS; record it there when implemented.
-1. **Every change is a WAL record applied by one redo-capable apply function.**
-   - M4 can use a stub log that only hands out LSNs; M5 swaps in the real WAL.
-   - Catalog changes redo *logically by key*: adding a file id that exists, or deleting one that is gone, is a no-op.
-   - Index `REF_INC`/`REF_DEC` redo *by page LSN* (`redo=true` in the exthash API, already implemented and tested).
-   - `CHUNK_ADD`, `BLOCK_FREE` and `BLOCK_MOVE` are idempotent by key.
-2. **One applier at a time.** A single transaction mutex (the "checkpoint lock", taken as a mutex instead of the spec's rwlock) covers WAL append, fsync, and applying to pages. The checkpoint takes the same mutex. This keeps applies in LSN order, which page-LSN redo requires (D-013).
-   - Index stripes (SPEC §9 #4) become unnecessary under this mutex. Plan: document this in SPEC §9 and DECISIONS rather than implementing stripes.
-   - Two uploads storing the same new block: the second `CHUNK_ADD` gets `NX_EXT_EXISTS`. Its container copy becomes orphan bytes (reclaimed by compaction) and the block counts as deduplicated.
-3. **Pool full during apply.**
-   - The applier releases its catalog and directory locks (keeping only the transaction mutex), checkpoints with `checkpoint_lsn = BEGIN lsn − 1` of the transaction in progress, then retries the record.
-   - Readers that get `NX_BP_FULL` release all locks, take the transaction mutex, checkpoint, and retry.
-   - On `NX_EXT_NEED_SPLIT`: take the directory lock exclusively, split, retry.
-4. **Next-id counters after recovery:** `max(superblock value, max id in catalog + 1, max id seen in replayed records + 1)`.
-5. **The directory image must be written through the doublewrite file together with the dirty pages.** Use `nx_exthash_dir_image()`: it is padded to 4 KB pages for exactly this. Never write `dir.bin` with a separate rename, because then pages and directory could come from different checkpoints after a crash.
-6. **Recipes** (`recipes.dat`): append and fsync under their own leaf mutex before the commit record. A torn tail is harmless, because recipes are only reached through the offset in a committed file record. Reads check magic, file id, count, and CRC.
-7. **Stats counters:**
-   - logical = sum of file sizes
-   - physical = sum of index entry lengths
-   - writes skipped = logical − physical
-   - network saved = sum(size − bytes_sent)
-
-**M4 acceptance (SPEC §14).** An in-process put/get/delete round trip of 200 random files, including duplicates and edited copies; `engine_fsck` checks I1–I3 (SPEC §1, §10).
+**M5 acceptance (SPEC §14).** Torn-tail, torn-checkpoint (doublewrite), and crash-between-steps tests; an in-process crash loop of 20 iterations.
 
 ## Open problems
 - **Windows and Linux not yet verified.** `plat_win32.c` and the Linux paths of `plat_posix.c` (getrandom, MSG_NOSIGNAL) have not been compiled. They will be once the repo is pushed to GitHub and CI runs, or when a teammate runs `make -C server test` on a Windows laptop (MSYS2) or Linux.
