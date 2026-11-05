@@ -1,0 +1,180 @@
+/*
+ * Design tokens (DESIGN.md §2). Components use these variables only: no raw
+ * colors, font sizes, radii, or durations anywhere else (CLAUDE.md).
+ *
+ * Dark mode follows the system unless the user picks a theme; the user's
+ * choice sets data-theme on <html> (app/theme.tsx).
+ */
+:root {
+  color-scheme: light;
+
+  /* surfaces */
+  --bg: #eef1f0; /* page ground, mist */
+  --surface: #f7f9f8; /* panels, drawers, tray */
+  --surface-hover: #e3e9e9; /* row hover, subtle fills */
+  --surface-press: #dfe6e6; /* segmented control track, pressed */
+  --line: #dce3e3; /* hairline separators */
+  --line-strong: #b9c6c9; /* input borders, secondary button border */
+  --line-hover: #8fa2a8; /* secondary button border on hover (DESIGN §6) */
+  --line-input: #7e8d92; /* input border: 3:1 against fill and page (WCAG 1.4.11) */
+  --line-input-hover: #6e7d82;
+
+  /* text */
+  --ink: #17242b; /* primary text, primary button */
+  --ink-2: #4a5a61; /* secondary text */
+  --ink-3: #55646b; /* small meta text (passes 4.5:1 on --bg) */
+  --on-ink: #f4f6f5; /* text on --ink */
+
+  /* meaning */
+  --shared: #2c5878; /* already stored / reused / shared */
+  --shared-soft: #6c90a9;
+  --shared-ring: rgb(44 88 120 / 0.2); /* input focus ring: --shared at 20% */
+  --new: #e9b08b; /* new / sent over the network */
+  --ok: #4c8a68; /* online, verified */
+  --warn: #8a5a12; /* warning text */
+  --warn-bg: #f3e6cf;
+  --danger: #b5473a; /* errors, destructive */
+  --danger-bg: #f4deda;
+
+  /* block-field share levels (written once -> shared by 5+) */
+  --lvl-1: #c4d1d6;
+  --lvl-2: #a7becb;
+  --lvl-3: #6c90a9;
+  --lvl-4: var(--shared);
+  --tile-empty: transparent;
+  --v1-block: #c9d5d9;
+  --v1-dim: #dfe5e6;
+
+  /* type */
+  --font-sans: "Geist", system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  --font-mono: "Geist Mono", ui-monospace, "SFMono-Regular", Consolas, monospace;
+  --fs-display: clamp(44px, 6.4vw, 92px);
+  --fs-h1: clamp(40px, 5vw, 72px);
+  --fs-h2-big: clamp(30px, 3.4vw, 46px);
+  --fs-h2: 22px;
+  --fs-lead: 18px;
+  --fs-body: 16px;
+  --fs-ui: 15px;
+  --fs-small: 14px;
+  --fs-meta: 13px;
+  --fs-wordmark: 19px; /* DESIGN §5 */
+
+  /* space (4 px base) */
+  --s-1: 4px;
+  --s-2: 8px;
+  --s-3: 12px;
+  --s-4: 16px;
+  --s-5: 20px;
+  --s-6: 24px;
+  --s-8: 32px;
+  --s-10: 40px;
+  --s-12: 48px;
+  --s-14: 56px;
+  --s-18: 72px;
+  --s-24: 96px;
+  --gutter: clamp(20px, 4vw, 56px);
+  --max-w: 1280px;
+
+  /* sizes of fixed UI parts */
+  --ctl-h: 44px; /* buttons, inputs */
+  --avatar: 32px; /* user initial circle */
+  --dot: 8px; /* status dot */
+  --spinner: 14px;
+  --icon: 18px;
+  --auth-w: 400px; /* sign-in column */
+  --menu-w: 240px;
+  --calm-w: 560px; /* full-page calm states */
+
+  /* shape */
+  --r-tile: 3px;
+  --r-block: 4px;
+  --r-ctl: 10px; /* buttons, inputs, segmented control (no pills) */
+  --r-panel: 20px;
+  --r-tray: 14px; /* upload tray, drawer edge, menus */
+  --r-round: 50%; /* the user initial circle and status dot only */
+
+  /* elevation: only floating things get a shadow */
+  --shadow-float: 0 1px 2px rgb(23 36 43 / 0.06), 0 12px 32px rgb(23 36 43 / 0.1);
+
+  /* motion */
+  --ease-out: cubic-bezier(0.2, 0.7, 0.2, 1);
+  --ease-emph: cubic-bezier(0.16, 0.8, 0.24, 1);
+  --t-micro: 200ms;
+  --t-state: 320ms;
+  --t-enter: 900ms;
+  --t-pulse: 1200ms; /* reconnecting dot (DESIGN §6) */
+  --t-spin: 800ms;
+
+  /* data dims while offline (DESIGN §8.8) */
+  --offline-dim: 0.6;
+}
+
+/* Dark: system preference, unless the user picked light. Same values as
+ * [data-theme="dark"] below (DESIGN §2 asks for both blocks). */
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    color-scheme: dark;
+    --bg: #10181c;
+    --surface: #172127;
+    --surface-hover: #1e2a31;
+    --surface-press: #24323a;
+    --line: #24323a;
+    --line-strong: #3a4b54;
+    --line-hover: #5a6e78;
+    --line-input: #5e6e76;
+    --line-input-hover: #728188;
+    --ink: #e6ecec;
+    --ink-2: #a9b7bc;
+    --ink-3: #98a8ae;
+    --on-ink: #10181c;
+    --shared: #7fa8c6;
+    --shared-soft: #527c99;
+    --shared-ring: rgb(127 168 198 / 0.25);
+    --new: #e0a57f;
+    --ok: #6fb08c;
+    --warn: #e2b66a;
+    --warn-bg: #2e2614;
+    --danger: #e07e70;
+    --danger-bg: #33201d;
+    --lvl-1: #2a3b44;
+    --lvl-2: #36546a;
+    --lvl-3: #527c99;
+    --lvl-4: var(--shared);
+    --v1-block: #34454e;
+    --v1-dim: #222f36;
+    --shadow-float: 0 1px 2px rgb(0 0 0 / 0.3), 0 12px 32px rgb(0 0 0 / 0.45);
+  }
+}
+
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --bg: #10181c;
+  --surface: #172127;
+  --surface-hover: #1e2a31;
+  --surface-press: #24323a;
+  --line: #24323a;
+  --line-strong: #3a4b54;
+  --line-hover: #5a6e78;
+  --line-input: #5e6e76;
+  --line-input-hover: #728188;
+  --ink: #e6ecec;
+  --ink-2: #a9b7bc;
+  --ink-3: #98a8ae;
+  --on-ink: #10181c;
+  --shared: #7fa8c6;
+  --shared-soft: #527c99;
+  --shared-ring: rgb(127 168 198 / 0.25);
+  --new: #e0a57f;
+  --ok: #6fb08c;
+  --warn: #e2b66a;
+  --warn-bg: #2e2614;
+  --danger: #e07e70;
+  --danger-bg: #33201d;
+  --lvl-1: #2a3b44;
+  --lvl-2: #36546a;
+  --lvl-3: #527c99;
+  --lvl-4: var(--shared);
+  --v1-block: #34454e;
+  --v1-dim: #222f36;
+  --shadow-float: 0 1px 2px rgb(0 0 0 / 0.3), 0 12px 32px rgb(0 0 0 / 0.45);
+}

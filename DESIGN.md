@@ -106,6 +106,14 @@ Put these in `web/src/styles/tokens.css`. Components reference tokens only.
 }
 ```
 
+**Tokens added in M8** (implementation in `web/src/styles/tokens.css`; values for both themes live there):
+- `--line-hover` (#8FA2A8, the secondary-button hover border named in §6);
+- `--line-input` / `--line-input-hover` (light #7E8D92 / #6E7D82, dark #5E6E76 / #728188). Input borders need 3:1 against both the field fill and the page (WCAG 1.4.11; the contrast floor below). `--line-strong` is 1.7:1, so it stays for hairline-strength borders only;
+- `--shared-ring` (the 20% focus ring of §6);
+- fixed sizes: `--ctl-h` 44, `--avatar` 32, `--dot` 8, `--spinner` 14, `--icon` 18, `--auth-w` 400, `--menu-w` 240, `--calm-w` 560;
+- `--fs-wordmark` 19, `--r-round` 50% (avatar and status dot only), `--t-pulse` 1200 ms, `--t-spin` 800 ms, `--offline-dim` 0.6;
+- a dark `--shadow-float` with deeper black, since the light one disappears on `--bg` dark.
+
 Light mode is the default and the projector mode. Dark mode follows the system unless the user picks a theme in the user menu (stored in `localStorage`). Copy the dark values into the `prefers-color-scheme` block when implementing.
 
 Contrast floor: body and meta text at least 4.5:1 against the surface it sits on; graphical elements that carry meaning (tiles, bars, blocks, focus rings) at least 3:1 against their neighbors.
@@ -162,7 +170,7 @@ Icons: `lucide-react`, size 18, `strokeWidth={1.5}`, color inherits. Used sparin
 
 **Nav links.** Text links, 15 px, `--ink-2`, padding 12 px 16 px. Hover: color to ink and a 1 px underline that grows left to right over 320 ms `--ease-out` (background-size technique). Current page: ink text with the full 1 px underline, `aria-current="page"`. No pill backgrounds.
 
-**Inputs.** Height 44 px, `--r-ctl`, 1 px `--line-strong` border, `--surface` fill, 15 px text. Focus: border `--shared` plus 3 px ring of `--shared` at 20% opacity. Error: border `--danger` and a 13 px message below in `--danger`. Labels above inputs, never placeholder-only.
+**Inputs.** Height 44 px, `--r-ctl`, 1 px `--line-input` border (hover `--line-input-hover`), `--surface` fill, 15 px text. Focus: border `--shared` plus 3 px ring of `--shared` at 20% opacity. Error: border `--danger` and a 13 px message below in `--danger`. Labels above inputs, never placeholder-only.
 
 **Segmented control** (Compare mode). Track `--surface-press`, 4 px padding, `--r-ctl`. Selected segment: `--ink` fill, `--on-ink` text. Unselected hover: `--bg` fill, ink text. `aria-pressed` on each button.
 
@@ -178,7 +186,7 @@ Icons: `lucide-react`, size 18, `strokeWidth={1.5}`, color inherits. Used sparin
 
 **Status indicator.** 8 px dot plus text. Live: `--ok` dot, "Live, updated 3 s ago". Reconnecting: `--warn` dot pulsing at 1.2 s, "Reconnecting". Offline: `--danger` dot, "Offline".
 
-**Banner.** Full-width strip under the header for system states (offline, recovering). `--warn-bg` or `--danger-bg`, 14 px text, one action at most.
+**Banner.** Full-width strip under the header for system states (offline, recovering). `--warn-bg` or `--danger-bg`, 14 px text, one action at most. On `--danger-bg` the text is `--ink`: `--danger` on `--danger-bg` is 4.15:1, below the 4.5:1 floor. The same applies to form-level error notes.
 
 **Charts.** Hand-built SVG, no chart library. Sparklines 120×28, 1.5 px line in `--shared`, no axes. Bar histograms with 2 px gaps. Every chart has a text equivalent nearby.
 
@@ -193,6 +201,8 @@ Icons: `lucide-react`, size 18, `strokeWidth={1.5}`, color inherits. Used sparin
 - Center-left: nav. Students see Overview, Files, Compare. Admins also see Engine and Users. Engine is its own page (fixes the mockup inconsistency).
 - Right: status indicator, then the user menu: initial in a 32 px circle (`--surface-press` fill) and display name; menu holds Theme (Light, Dark, System) and Sign out.
 - Drag-and-drop anywhere in the app opens the upload tray with the dropped files.
+- Phone (< 768 px): row one holds the brand, the status dot with its state word ("Live"), and the avatar alone; row two holds the nav, one line with tighter link padding. The "updated 3 s ago" detail and the display name are hidden.
+- A "Skip to content" link is the first Tab stop.
 
 ## 8. Screens
 
@@ -212,7 +222,7 @@ Password        [__________]
 New here? Create an account with your lab's join code.   (link)
 ```
 
-Join form: Display name, Username (lowercase letters, digits, dot, dash; 3–32), Password (minimum 10 characters, show/hide toggle), Join code. Errors appear inline under the relevant field, for example "That join code is not valid. Ask the lab admin for the current one." Rate-limit message: "Too many attempts. Try again in a minute."
+Join form: Display name, Username (letters, digits, dot, dash, underscore; 3–32; stored lower-case, SPEC §13), Password (minimum 10 characters, show/hide toggle), Join code. Each field's rule stays visible as a hint; an error under it says what went wrong. Errors appear inline under the relevant field, for example "That join code is not valid. Ask the lab admin for the current one." Rate-limit message: "Too many attempts. Try again in a minute."
 
 ### 8.2 Overview
 
@@ -329,8 +339,10 @@ List of users: display name, username, role, files, stored size, last seen, stat
 ### 8.8 System states (fixes critique P2)
 
 - **Offline:** banner "Lost connection to the lab server. Retrying in 4 s." Data on screen stays visible but dims to 60%; the status indicator turns red. Reconnect with backoff 1, 2, 4, 8, max 10 s. On reconnect, refetch stats and lists.
-- **Recovering:** `/api/health` reports `recovering`; full-page calm state with the mark, "The server is recovering after an unexpected stop", and live progress "Replayed 1,204 of 1,530 log records". When done: "Recovery complete. All files checked." and the app reloads data.
+- **Recovering:** `/api/health` reports `recovering`; full-page calm state with the mark, "The server is recovering after an unexpected stop", and live progress from the server: "Replaying the log, 3 s so far." (The server replays inside one call and reports elapsed time, not record counts; counts arrive afterwards in the `engine.recovery` event for the Engine screen.) When done: "Recovery complete. Every committed change is back in place." and the app reloads data. (Changed in M8 from "All files checked": recovery replays the log, it does not check files; that is `--fsck`.)
+- **Unreachable on first load:** before the app knows who is signed in, a calm page "Cannot reach the lab server", what to check, and the retry countdown with "Retry now". Once signed in, the offline banner is used instead.
 - **Session ended:** redirect to sign-in with "Your session ended. Sign in again."
+- **Sign out while offline:** refused with "Signing out needs the server. Try again when the connection is back." The session cookie is HttpOnly, so only the server can end it; a local-only sign-out would leave the next person at a shared lab PC signed in.
 - **Loading:** content-shaped skeletons in `--surface-hover` with no shimmer animation. Never spinners on whole pages.
 - **Errors in lists:** inline line with a Retry link, never a modal.
 

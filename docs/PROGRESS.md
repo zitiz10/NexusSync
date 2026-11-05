@@ -5,9 +5,9 @@ Resume after an interruption: read `CLAUDE.md`, then this file, re-run the tests
 
 Platforms: macOS (verified locally on Apple Silicon), Linux and Windows (verified in CI once the repo is pushed; see "Open problems").
 
-Current scope agreed with the team: M1–M7 in this run; M8–M14 in later sessions.
+Sessions so far: session 1 built M1–M3; session 2 built M4–M8. **The next session starts at M9** and continues to M14.
 
-**Status (2026-11-06): M1–M7 done and committed: the agreed scope of this run (M1–M7) is complete. Next: M8 (frontend).** See "Handoff notes for M8" below.
+**Status (2026-11-06): M1–M8 done and committed. Next: M9 (Overview, Files, upload tray).** Read "Handoff notes for M9–M14" below before starting.
 
 ## M1 Scaffold
 - [x] Repo layout per `CLAUDE.md` (plus `server/src/platform/`); module folders fill in from M2
@@ -72,23 +72,79 @@ Current scope agreed with the team: M1–M7 in this run; M8–M14 in later sessi
 - [x] ThreadSanitizer clean on server, upload, net, engine, and index tests after fixing a real race it found in index statistics (D-033)
 - [x] Full suite: `python3 scripts/check.py` passes (91 C tests in 14 executables under ASan+UBSan, concurrency test, web 16/16), `-Werror` clean
 
-## M8–M14
-Not started (later sessions). See SPEC §14.
+## M8 Frontend foundation
+- [x] Tokens (DESIGN §2, plus the M8 additions recorded in DESIGN), self-hosted Geist and Geist Mono (OFL), base styles with themed selection, caret, focus, and scrollbars; no raw values in component code
+- [x] Shell: brand, nav (admin-only Engine/Users), status indicator ("Live, updated N s ago", Reconnecting, Offline), user menu (theme Light/Dark/System persisted, sign out), skip link; phone layout on two rows
+- [x] Sign in and join: labels above fields, rules as hints, inline errors from client checks and from server codes, show/hide password, rate-limit and session-ended messages
+- [x] API client (CSRF header, typed errors, 401 = session ended) and WebSocket client with backoff 1, 2, 4, 8, 10 s; refetch epoch after a reconnect or a recovery
+- [x] System states: offline banner with dimmed data, recovering and recovery-complete pages, unreachable page, loading skeleton, session ended, sign-out refused while offline
+- [x] Screenshots at 1440×900, 1366×768, 390×844 (and dark) via Playwright against a real nexusd (`cd web && npm run e2e`, 18 tests): checked against DESIGN, fixed, re-shot once
+- [x] Impeccable critique (independent sub-agent, 29/40) and audit (computed contrast tables, keyboard, ARIA): all P0/P1 fixed; two token contrast failures fixed in DESIGN (D-036); remaining items listed in D-039
+- [x] Tests: web unit 29/29, Playwright 18/18 (including a real SIGKILL and reconnect while staying signed in), `python3 scripts/check.py` passes, typecheck strict, `npm audit` 0
 
-## Handoff notes for M8 (read before starting)
+## M9 Overview, Files, upload tray
+- [ ] Server: `GET /api/stats` (SPEC §12) and the `stats.updated` event (2/s max)
+- [ ] Server: `GET /api/blockmap` (+ `?file=`), and real `newTiles` in `upload.progress`
+- [ ] Browser chunker + hashing in a Web Worker (`web/src/engine/chunker.ts` exists, parity-tested in M2), 8 MB windows
+- [ ] Overview: headline, block field (384 tiles, entrance motion, linked hover, live pulses), Recent uploads, right column (admin engine summary / student storage), empty state
+- [ ] Files: list with search, sort, scope, paging; drawer (versions, blocks, SHA-256 copy, download, delete with 6 s undo toast); share toggle; empty and no-results states
+- [ ] Upload tray: phases Reading → Checking → Sending → Verifying → Done; failures (connection lost + resume, hash mismatch, disk full, session ended); cancel; drag and drop anywhere
+- [ ] Screenshots of every state at three sizes, critique and audit, Playwright flows
 
-**State of the repo.** `main` is clean at the M7 commit. No GitHub remote yet; do not push. Scope agreed for this run (M1–M7) is done; M8–M14 are the frontend and finishing milestones.
+## M10 Compare versions
+- [ ] Server: `GET /api/compare` with fixed and CDC modes, window, minimap, block details, 5 min cache
+- [ ] Screen per DESIGN §8.5 (defaults to fixed, pickers, window, minimap, hover partners, details, motion)
 
-**What the frontend can rely on now.**
-- Auth: `/api/auth/join|login|logout`, `/api/me`; the cookie is HttpOnly, so the app learns who is signed in from `/api/me`. Every mutating request needs `X-NexusSync: 1`.
-- Files: `/api/files` (list), `/api/files/{id}` (detail with versions, blocks), `/content`, PATCH `{shared}`, DELETE.
-- Uploads: the protocol of SPEC §12, already exercised by the CLI (`cli/main.c` `cmd_put` is a reference client).
-- Events on `/ws`: `upload.progress` (phases manifest, sending, committing; `done`/`total` in bytes; `newTiles` empty until the block map exists), `upload.committed`, `upload.failed`, `file.updated`, `file.deleted`, `engine.checkpoint`, `engine.recovery`, `engine.corruption`, `server.shutdown`.
-- `/api/health` reports `recovering` while the engine opens; the static app is served meanwhile (D-026).
+## M11 Engine and Users screens, system states
+- [ ] Server: remaining `/api/admin/*` (users, events, recoveries, addresses, gc, scan; join code is done)
+- [ ] Engine screen (DESIGN §8.6) with live data and actions; Users screen (§8.7); QR codes (`qrcode` package)
+- [ ] Resolve D-039 items 1–2 (offline dimming contrast; live recovery counts)
 
-**Not built yet (needed by M9–M11):** `/api/stats` and the `stats.updated` event, `/api/blockmap` and real `newTiles`, `/api/compare`, the remaining `/api/admin/*` (users, events, recoveries, addresses, gc, scan), `nexus stats`.
+## M12 Cleanup, compaction, integrity
+- [ ] GC respecting the grace period and open upload sessions (`nx_uploads_declares` exists), compaction surviving a crash mid-way, scan detecting an injected corrupt byte, nightly schedule, `--rebuild-index`
 
-**Before a demo:** `python3 scripts/crash_test.py 50` (about 2 minutes) and `python3 scripts/check.py`.
+## M13 CLI, demo tooling, evaluation
+- [ ] `nexus stats`; `scripts/make_demo_data.py`, `scripts/demo_reset.py`; `eval/run_eval.py` with tables and charts; `crash_test.py 50` (already passing since M7)
+
+## M14 Polish and final report
+- [ ] Polish pass across the app (Impeccable `polish`, with the plugin's detector installed); every screen and state at three sizes per DESIGN §13; Playwright end-to-end flow of SPEC §15; final report below
+
+## Handoff notes for M9–M14 (read before starting)
+
+**How to resume.** Read `CLAUDE.md`, then this file, then `DESIGN.md` §8.2–§8.4 and SPEC §12 for M9. Re-run the last step's tests first:
+```bash
+python3 scripts/check.py          # C tests (ASan), 8-client concurrency test, web unit tests
+cd web && npm run e2e             # builds the app, starts a real nexusd, 18 Playwright tests
+```
+Both passed at the M8 commit. No GitHub remote yet; do not push. Commit after each milestone (no Co-Authored-By trailers, CLAUDE.md).
+
+**Packages and tools already approved and installed:** cJSON (vendored), Geist fonts, `lucide-react`, `@playwright/test` (uses the installed Google Chrome, `channel: 'chrome'`). Still allowed but not installed: `qrcode` (M11). Downloads need the user's OK each time.
+
+**Frontend map (web/src).**
+- `styles/tokens.css`: the only place for values.
+- `styles/components.css`: buttons, fields, nav, status, menu, banner, skeleton, auth, calm.
+- `api/client.ts`: typed `request()` and `api.*` endpoints. Add new endpoints here.
+- `api/ws.ts`: `LiveSocket`.
+- `app/connection.tsx`:
+  - `useConnection()` gives `server`, `link`, `lastUpdated`, and `epoch` (refetch when it changes);
+  - `useServerEvent(type, fn)` subscribes to one event type;
+  - `useNow()` re-renders on a timer.
+- `app/auth.tsx`: `useAuth()` and `useUser()`.
+- `app/theme.tsx`, `app/format.ts` (`formatBytes`, `formatAgo`), `app/validate.ts`.
+- `components/`: Button (with loading), TextField, Mark/Brand, StatusIndicator, UserMenu, OfflineBanner, icons.
+- `screens/`: Shell, SignIn, Join, SystemStates. `Pages.tsx` holds the "Not available yet" pages for M9–M11; replace each one when you build its screen.
+
+**Server map for the new endpoints.**
+- Routes: the `ROUTES` table in `server/src/net/router.c` (`{id}` and `{uid}` parameters; the state, CSRF, auth, and admin gates are automatic).
+- Handlers in `server/src/api/`; JSON with `util/json_out.h`; events with `nx_hub_publish`.
+- Engine stats: `nx_engine_get_stats`. Index walk: `nx_exthash_for_each` (hold the shared directory lock). Recipes: `nx_engine_file_recipe`.
+- `upload.progress` already carries `newTiles: []`: fill it once the block map exists (M9).
+
+**Testing patterns to reuse.**
+- C: `tests/nx_server_util.h` (in-process server and raw client); `tests/integration/test_uploads.c` shows the upload protocol.
+- Web: `web/e2e/server.ts` (start, kill, restart the real server); screenshots go to `web/screenshots/<milestone>/`.
+
+**Open design questions for the team (D-039):** offline dimming contrast; live recovery counts. Both are scheduled in M11 above.
 
 ## Open problems
 - **Windows and Linux not yet verified.** `plat_win32.c` and the Linux paths of `plat_posix.c` (getrandom, MSG_NOSIGNAL) have not been compiled. They will be once the repo is pushed to GitHub and CI runs, or when a teammate runs `make -C server test` on a Windows laptop (MSYS2) or Linux.

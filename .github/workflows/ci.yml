@@ -75,3 +75,7 @@ jobs:
         working-directory: web
       - run: npm run build
         working-directory: web
+      # Builds nexusd, starts it on a temp data dir, drives the installed
+      # Google Chrome against it (web/e2e, D-037).
+      - run: npm run e2e
+        working-directory: web

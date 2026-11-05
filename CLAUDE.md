@@ -48,27 +48,31 @@ nexussync/
   server/
     include/   public headers
     src/
-      engine/  chunk_fixed.c chunk_cdc.c gear_table.h sha.c container.c
-               bufpool.c exthash.c catalog.c recipe.c wal.c checkpoint.c
-               recovery.c gc.c scan.c engine.c
+      engine/  chunk_fixed.c chunk_cdc.c chunker.c gear_table.h container.c
+               bufpool.c exthash.c catalog.c recipe.c logrec.c wal.c
+               checkpoint.c (doublewrite) superblock.c engine.c (txns, recovery, fsck)
+               (M12 adds gc.c scan.c)
       net/     server.c http.c ws.c router.c static.c
-      api/     auth.c files.c uploads.c compare.c stats.c admin.c events.c
-      util/    log.c config.c crc32.c json_out.c time.c
+      api/     app.c auth.c files.c uploads.c   (M9-M11 add stats.c compare.c admin.c)
+      util/    log.c config.c crc32.c json_out.c hmap.c failpoint.c bytes.h
       platform/ platform.h plat_posix.c plat_win32.c   (all OS calls)
       crypto/  sha256.c sha1.c hmac.c pbkdf2.c
       main.c
     vendor/    cJSON.c cJSON.h
-    tests/     unit/ integration/ fixtures/
-    Makefile
-  cli/         main.c client.c  (links server/src/engine/chunk_*.c, crypto/, platform/)
+    tests/     unit/ integration/ fixtures/ tools/  nx_test.h nx_engine_util.h nx_server_util.h
+    Makefile   (also builds the CLI: server/build/nexus)
+  cli/         main.c client.c client.h  (links the server's chunker, crypto, platform, cJSON)
   web/
     public/fonts/        Geist and Geist Mono woff2 (self-hosted)
     src/
-      app/ components/ screens/ engine/ (browser chunker, worker)
-      styles/tokens.css  styles/base.css
-      api/ (typed client, websocket)
-    index.html  vite.config.ts
-  scripts/     check.py gen_gear.py crash_test.py demo_reset.py make_demo_data.py fsck_all.py
+      app/ (App routes and gates, auth, connection, theme, format, validate)
+      components/ screens/ engine/ (browser chunker; the worker arrives in M9)
+      styles/tokens.css  styles/base.css  styles/components.css
+      api/ (typed client, websocket, backoff)
+    e2e/       Playwright against a real nexusd (global-setup starts it)
+    index.html  vite.config.ts  playwright.config.ts
+  scripts/     check.py gen_gear.py make_fixtures.py nxlib.py concurrency_test.py crash_test.py
+               (M13 adds demo_reset.py make_demo_data.py)
                (Python so they run unchanged on every OS)
   .github/workflows/ci.yml   build + test on ubuntu, macos, windows
   eval/        run_eval.py  results/
@@ -93,17 +97,26 @@ make -C server test         # unit + integration tests (under asan where availab
 ./server/build/nexusd --config nexussync.conf --init           # create data dir
 ./server/build/nexusd --config nexussync.conf --create-admin   # prompts for password
 ./server/build/nexusd --config nexussync.conf --fsck           # full consistency check
-./server/build/nexusd --config nexussync.conf --rebuild-index  # rebuild index from containers
+./server/build/nexusd --config nexussync.conf --rebuild-index  # rebuild index from containers (M12)
+
+# CLI (built by make -C server; NEXUS_HOME and NEXUS_PASSWORD exist for scripts)
+./server/build/nexus --server http://127.0.0.1:8080 login <username>
+./server/build/nexus put <file> [--fixed] [--new-file]
+./server/build/nexus get <id|name> [-o out]
+./server/build/nexus ls [--shared]
+./server/build/nexus rm <id>
 
 # web
 cd web && npm ci
 npm run dev       # Vite dev server on :5173, proxies /api and /ws to :8080
 npm run build     # outputs web/dist, served by nexusd at runtime
-npm test          # vitest (chunker parity, reducers)
-npm run e2e       # Playwright end-to-end
+npm test          # vitest (chunker parity, client logic)
+npm run e2e       # builds the app, starts a real nexusd on a temp data dir, runs Playwright
+                  # in the installed Google Chrome; screenshots in web/screenshots/
 
 # tooling
-python3 scripts/check.py              # C tests + web tests in one command
+python3 scripts/check.py              # C tests + 8-client concurrency test + web tests
+python3 scripts/concurrency_test.py   # 8 CLI clients upload overlapping files, then fsck
 python3 scripts/gen_gear.py           # regenerates gear tables for C and TS from one seed
 python3 scripts/crash_test.py 50      # 50 random hard kills (SIGKILL / TerminateProcess), fsck after each
 python3 scripts/demo_reset.py         # wipe and seed a clean demo server

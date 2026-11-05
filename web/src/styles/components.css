@@ -1,0 +1,653 @@
+/*
+ * Components (DESIGN.md §6, §7, §8.1, §8.8). Tokens only.
+ */
+
+/* ---- buttons -------------------------------------------------------------- */
+
+.btn {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--s-2);
+  height: var(--ctl-h);
+  padding: 0 var(--s-5);
+  border: 1px solid transparent;
+  border-radius: var(--r-ctl);
+  font-size: var(--fs-ui);
+  font-weight: 500;
+  line-height: 1;
+  white-space: nowrap;
+  cursor: pointer;
+  transition:
+    background-color var(--t-micro) var(--ease-out),
+    border-color var(--t-micro) var(--ease-out),
+    color var(--t-micro) var(--ease-out);
+}
+
+.btn--primary {
+  background: var(--ink);
+  color: var(--on-ink);
+}
+
+@media (hover: hover) {
+  .btn--primary:hover:not(:disabled) {
+    background: var(--shared);
+  }
+}
+
+.btn--secondary {
+  background: transparent;
+  border-color: var(--line-strong);
+  color: var(--ink);
+}
+
+@media (hover: hover) {
+  .btn--secondary:hover:not(:disabled) {
+    background: var(--surface-hover);
+    border-color: var(--line-hover);
+  }
+}
+
+.btn--danger {
+  background: transparent;
+  border-color: var(--danger);
+  color: var(--danger);
+}
+
+@media (hover: hover) {
+  .btn--danger:hover:not(:disabled) {
+    background: var(--danger-bg);
+  }
+}
+
+.btn--block {
+  width: 100%;
+}
+
+.btn:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
+/* Loading: the label stays and the width does not change (DESIGN §6). */
+.btn[aria-busy="true"] {
+  cursor: progress;
+}
+
+.btn__spinner {
+  position: absolute;
+  left: var(--s-5);
+}
+
+.btn--block .btn__spinner {
+  left: auto;
+  right: var(--s-5);
+}
+
+.spinner {
+  display: inline-block;
+  width: var(--spinner);
+  height: var(--spinner);
+  border: 1.5px solid currentColor;
+  border-right-color: transparent;
+  border-radius: var(--r-round);
+  animation: spin var(--t-spin) linear infinite;
+}
+
+@keyframes spin {
+  to {
+    transform: rotate(1turn);
+  }
+}
+
+/* Small text button (show/hide password, retry). */
+.text-btn {
+  padding: var(--s-1) var(--s-2);
+  margin: calc(-1 * var(--s-1)) calc(-1 * var(--s-2));
+  border: 0;
+  border-radius: var(--r-ctl);
+  background: none;
+  color: var(--shared);
+  font-size: var(--fs-small);
+  cursor: pointer;
+  text-decoration: underline;
+  text-decoration-color: color-mix(in srgb, var(--shared) 40%, transparent);
+  text-underline-offset: 0.2em;
+}
+
+.text-btn:hover {
+  text-decoration-color: currentColor;
+}
+
+/* ---- fields --------------------------------------------------------------- */
+
+.field {
+  display: grid;
+  gap: var(--s-2);
+}
+
+.field__label-row {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--s-3);
+}
+
+.field__label {
+  font-size: var(--fs-small);
+  font-weight: 500;
+  color: var(--ink);
+}
+
+.field__hint {
+  font-size: var(--fs-meta);
+  color: var(--ink-3);
+}
+
+.field__error {
+  font-size: var(--fs-meta);
+  color: var(--danger);
+}
+
+.input {
+  width: 100%;
+  height: var(--ctl-h);
+  padding: 0 var(--s-3);
+  border: 1px solid var(--line-input);
+  border-radius: var(--r-ctl);
+  background: var(--surface);
+  color: var(--ink);
+  font-size: var(--fs-ui);
+  transition:
+    border-color var(--t-micro) var(--ease-out),
+    box-shadow var(--t-micro) var(--ease-out);
+}
+
+.input:hover {
+  border-color: var(--line-input-hover);
+}
+
+/* Focus: --shared border and a 3 px ring at 20% (DESIGN §6). */
+.input:focus-visible {
+  outline: none;
+  border-color: var(--shared);
+  box-shadow: 0 0 0 3px var(--shared-ring);
+}
+
+.input[aria-invalid="true"] {
+  border-color: var(--danger);
+}
+
+.input[aria-invalid="true"]:focus-visible {
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--danger) 20%, transparent);
+}
+
+/* Room for the show/hide control inside the password field. */
+.input-wrap {
+  position: relative;
+}
+
+.input-wrap .input {
+  padding-right: var(--s-18);
+}
+
+.input-wrap__action {
+  position: absolute;
+  top: 50%;
+  right: var(--s-4);
+  transform: translateY(-50%);
+}
+
+/* ---- form-level notes ---------------------------------------------------- */
+
+.note {
+  padding: var(--s-3) var(--s-4);
+  border-radius: var(--r-ctl);
+  font-size: var(--fs-small);
+  line-height: 1.5;
+}
+
+.note--warn {
+  background: var(--warn-bg);
+  color: var(--warn);
+}
+
+/* Ink text on the tint: --danger on --danger-bg is 4.15:1, below AA. */
+.note--danger {
+  background: var(--danger-bg);
+  color: var(--ink);
+}
+
+/* ---- brand ---------------------------------------------------------------- */
+
+.brand {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--s-3);
+  color: var(--ink);
+  text-decoration: none;
+  border-radius: var(--r-ctl);
+}
+
+.brand__word {
+  font-size: var(--fs-wordmark);
+  font-weight: 500;
+  letter-spacing: -0.01em;
+}
+
+.mark {
+  flex: none;
+  display: block;
+}
+
+.mark__fill {
+  fill: var(--ink);
+}
+
+.mark__outline {
+  fill: none;
+  stroke: var(--ink);
+  stroke-width: 1.5;
+}
+
+.mark__shared {
+  fill: var(--shared);
+}
+
+/* ---- shell ------------------------------------------------------------------ */
+
+.shell-header {
+  max-width: var(--max-w);
+  margin: 0 auto;
+  padding: var(--s-8) var(--gutter);
+  display: flex;
+  align-items: center;
+  gap: var(--s-8);
+}
+
+/* Negative margins: the links keep a large hit area without making the
+ * header taller than DESIGN §7's 88 px band. */
+.nav {
+  display: flex;
+  flex-wrap: wrap;
+  margin: calc(-1 * var(--s-3)) 0 calc(-1 * var(--s-3)) calc(-1 * var(--s-4));
+  padding: 0;
+  list-style: none;
+}
+
+/* Text links; the underline grows left to right (DESIGN §6). */
+.nav__link {
+  display: inline-block;
+  padding: var(--s-3) var(--s-4);
+  border-radius: var(--r-ctl);
+  color: var(--ink-2);
+  font-size: var(--fs-ui);
+  text-decoration: none;
+}
+
+.nav__text {
+  background-image: linear-gradient(currentColor, currentColor);
+  background-repeat: no-repeat;
+  background-position: 0 100%;
+  background-size: 0% 1px;
+  padding-bottom: 2px;
+  transition:
+    background-size var(--t-state) var(--ease-out),
+    color var(--t-micro) var(--ease-out);
+}
+
+.nav__link:hover {
+  color: var(--ink);
+}
+
+.nav__link:hover .nav__text,
+.nav__link[aria-current="page"] .nav__text {
+  background-size: 100% 1px;
+}
+
+.nav__link[aria-current="page"] {
+  color: var(--ink);
+}
+
+.shell-header__end {
+  margin-left: auto;
+  display: flex;
+  align-items: center;
+  gap: var(--s-6);
+}
+
+.main {
+  max-width: var(--max-w);
+  margin: 0 auto;
+  padding: var(--s-4) var(--gutter) var(--s-24);
+  transition: opacity var(--t-state) var(--ease-out);
+}
+
+.main--dimmed {
+  opacity: var(--offline-dim);
+}
+
+.page-head {
+  display: grid;
+  gap: var(--s-6);
+  padding-bottom: var(--s-12);
+  border-bottom: 1px solid var(--line);
+}
+
+.page-head--bare {
+  border-bottom: 0;
+}
+
+/* ---- status indicator ---------------------------------------------------- */
+
+.status {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--s-2);
+  font-size: var(--fs-meta);
+  color: var(--ink-2);
+  white-space: nowrap;
+}
+
+.status__dot {
+  width: var(--dot);
+  height: var(--dot);
+  border-radius: var(--r-round);
+  background: var(--ok);
+  flex: none;
+}
+
+.status--reconnecting .status__dot {
+  background: var(--warn);
+  animation: pulse var(--t-pulse) var(--ease-out) infinite;
+}
+
+.status--offline .status__dot {
+  background: var(--danger);
+}
+
+@keyframes pulse {
+  50% {
+    opacity: 0.25;
+  }
+}
+
+/* ---- user menu --------------------------------------------------------------- */
+
+.user {
+  position: relative;
+}
+
+.user__button {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--s-3);
+  margin: calc(-1 * var(--s-1)) 0;
+  padding: var(--s-1) var(--s-3) var(--s-1) var(--s-1);
+  border: 0;
+  border-radius: var(--r-ctl);
+  background: none;
+  font-size: var(--fs-ui);
+  cursor: pointer;
+  transition: background-color var(--t-micro) var(--ease-out);
+}
+
+.user__button:hover,
+.user__button[aria-expanded="true"] {
+  background: var(--surface-hover);
+}
+
+.avatar {
+  display: inline-grid;
+  place-items: center;
+  width: var(--avatar);
+  height: var(--avatar);
+  border-radius: var(--r-round);
+  background: var(--surface-press);
+  font-size: var(--fs-small);
+  font-weight: 500;
+  flex: none;
+}
+
+.menu {
+  position: absolute;
+  right: 0;
+  top: calc(100% + var(--s-2));
+  z-index: 20;
+  width: var(--menu-w);
+  padding: var(--s-2);
+  border: 1px solid var(--line);
+  border-radius: var(--r-tray);
+  background: var(--surface);
+  box-shadow: var(--shadow-float);
+}
+
+.menu__who {
+  padding: var(--s-2) var(--s-3) var(--s-3);
+  border-bottom: 1px solid var(--line);
+  margin-bottom: var(--s-2);
+}
+
+.menu__name {
+  font-size: var(--fs-ui);
+  overflow-wrap: anywhere;
+}
+
+.menu__label {
+  padding: var(--s-2) var(--s-3) var(--s-1);
+  font-size: var(--fs-meta);
+  color: var(--ink-3);
+}
+
+.menu__item {
+  display: flex;
+  align-items: center;
+  gap: var(--s-3);
+  width: 100%;
+  padding: var(--s-2) var(--s-3);
+  border: 0;
+  border-radius: var(--r-ctl);
+  background: none;
+  font-size: var(--fs-ui);
+  text-align: left;
+  cursor: pointer;
+}
+
+.menu__item:hover {
+  background: var(--surface-hover);
+}
+
+/* The fill alone is 1.16:1: keep a real ring for keyboard focus. */
+.menu__item:focus-visible {
+  background: var(--surface-hover);
+  outline: 2px solid var(--shared);
+  outline-offset: -2px;
+}
+
+.menu__note {
+  padding: var(--s-2) var(--s-3);
+  font-size: var(--fs-meta);
+  color: var(--ink-2);
+}
+
+.menu__check {
+  width: var(--icon);
+  display: inline-flex;
+  color: var(--shared);
+}
+
+.menu__sep {
+  height: 1px;
+  margin: var(--s-2) 0;
+  background: var(--line);
+}
+
+/* ---- banner (system states) --------------------------------------------- */
+
+.banner {
+  background: var(--warn-bg);
+  color: var(--warn);
+  font-size: var(--fs-small);
+}
+
+.banner--danger {
+  background: var(--danger-bg);
+  color: var(--ink); /* --danger on --danger-bg is 4.15:1, below AA */
+}
+
+.banner__inner {
+  max-width: var(--max-w);
+  margin: 0 auto;
+  padding: var(--s-3) var(--gutter);
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--s-2) var(--s-4);
+}
+
+.banner .text-btn,
+.meta .text-btn {
+  color: inherit;
+  font-size: inherit;
+}
+
+/* ---- skeletons: no shimmer (DESIGN §8.8) --------------------------------- */
+
+.skeleton {
+  display: block;
+  border-radius: var(--r-ctl);
+  background: var(--surface-hover);
+}
+
+.skeleton--h1 {
+  height: var(--s-18);
+  width: min(560px, 80%);
+}
+
+.skeleton--line {
+  height: var(--s-4);
+  width: min(420px, 60%);
+}
+
+.skeleton--nav {
+  height: var(--s-6);
+  width: min(320px, 40%);
+}
+
+/* ---- sign in and join (DESIGN §8.1) ---------------------------------------- */
+
+.auth {
+  min-height: 100vh;
+  display: grid;
+  place-items: center;
+  padding: var(--s-12) var(--gutter);
+}
+
+.auth__col {
+  width: 100%;
+  max-width: var(--auth-w);
+  display: grid;
+  gap: var(--s-10);
+}
+
+.auth__title {
+  /* h1 size and weight (DESIGN §8.1) from the global h1 rule */
+}
+
+.auth__form {
+  display: grid;
+  gap: var(--s-5);
+}
+
+.auth__alt {
+  font-size: var(--fs-small);
+  color: var(--ink-2);
+  line-height: 1.6;
+}
+
+/* Short laptop screens (1366x768 projectors): keep the form in view. */
+@media (max-height: 900px) {
+  .auth {
+    padding-block: var(--s-8);
+  }
+
+  .auth__col {
+    gap: var(--s-8);
+  }
+}
+
+/* ---- full-page calm states (recovering) ------------------------------------ */
+
+.calm {
+  min-height: 100vh;
+  display: grid;
+  place-items: center;
+  padding: var(--s-12) var(--gutter);
+}
+
+.calm__col {
+  width: min(var(--calm-w), 100%); /* fixed, so the left edge holds between states */
+  display: grid;
+  gap: var(--s-6);
+}
+
+.calm__title {
+  font-size: var(--fs-h2-big);
+  font-weight: 300;
+  line-height: 1.1;
+  letter-spacing: -0.025em;
+  text-wrap: balance;
+}
+
+/* ---- responsive (DESIGN §4): compact 768-1199, phone < 768 ----------------- */
+
+@media (max-width: 1199px) {
+  .shell-header {
+    gap: var(--s-6);
+  }
+
+  .shell-header__end {
+    gap: var(--s-4);
+  }
+}
+
+@media (max-width: 767px) {
+  .shell-header {
+    flex-wrap: wrap;
+    padding-top: var(--s-5);
+    padding-bottom: var(--s-4);
+    row-gap: var(--s-3);
+  }
+
+  .shell-header__brand {
+    order: 1;
+  }
+
+  .shell-header__end {
+    order: 2;
+  }
+
+  .shell-header__nav {
+    order: 3;
+    width: 100%;
+  }
+
+  /* Five links fit one line at 390 px with tighter sides. */
+  .nav {
+    margin-left: calc(-1 * var(--s-2));
+  }
+
+  .nav__link {
+    padding: var(--s-3) var(--s-2);
+  }
+
+  .user__name,
+  .status__detail {
+    display: none;
+  }
+
+  .user__button {
+    padding-right: var(--s-1);
+  }
+}

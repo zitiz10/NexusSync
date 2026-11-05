@@ -453,3 +453,50 @@ The upload fails. Nothing half-committed exists, because commit is atomic (WAL).
 - Why answer 404 instead of 403 for another student's file? *(403 would confirm that the id exists; 404 reveals nothing.)*
 - Why does `nexus get` write to a `.part` file first? *(If the download is cut short or the SHA-256 does not match, the half file is deleted and never mistaken for the real one.)*
 
+## M8 — Frontend foundation
+
+### What it does
+- **Design tokens** (`web/src/styles/tokens.css`): every color, size, radius, and duration from DESIGN.md as CSS variables. A component never contains a raw value, so dark mode is just a second set of values.
+- **Fonts:** Geist and Geist Mono, served by `nexusd` itself, because a lab network may have no internet.
+- **API client** (`web/src/api/client.ts`): one place that adds the CSRF header, turns server errors into readable messages, and notices when the session has ended.
+- **Live socket** (`web/src/api/ws.ts`): the WebSocket for events. It reconnects with growing pauses (1, 2, 4, 8, then 10 s).
+- **The shell:** brand, navigation (admin pages only for admins), the live status ("Live, updated 3 s ago"), and the account menu (theme, sign out).
+- **Sign in and join**, with errors placed under the field they are about.
+- **System states:** offline banner (data dims but stays visible), recovering page, unreachable page, loading skeleton, "your session ended".
+
+### How the app knows what is going on
+1. **Is the server there?** `GET /api/health` at start, every second while it recovers, and with backoff when it cannot be reached.
+2. **Who am I?** `GET /api/me`. The session cookie is HttpOnly (page scripts cannot read it, so stolen-script attacks cannot steal it), so asking the server is the only way.
+3. **What is changing?** The WebSocket. If it drops, the status shows "Reconnecting", then "Offline" with a banner. When it comes back, every screen reloads its data, because it may have missed events.
+4. **Did my session end?** Any 401 answer, or the socket being refused while the server answers health checks, means yes. The app goes to sign-in with a note.
+
+### Accessibility, checked rather than assumed
+- A computed contrast table for every text/background pair in both themes. It found two real failures in the original colors (input borders 1.66:1, red banner text 4.15:1); both are fixed and DESIGN.md updated (D-036).
+- Keyboard: a "Skip to content" link first; the account menu opens with Arrow Down, moves with arrows, closes with Escape, and returns focus to its button; one visible focus ring everywhere.
+- Screen readers: form errors are linked to their fields (`aria-describedby`) and announced; the live status announces only changes, not the ticking "3 s ago".
+
+### Testing a UI against the real server
+Playwright starts a real `nexusd` with a fresh data dir and drives Chrome at 1440×900, 1366×768, and 390×844. It also kills the server with SIGKILL in the middle of a test and checks that the app shows the offline banner, reconnects by itself, and is still signed in. Only two states are simulated, because a real server passes through them in milliseconds (D-037).
+
+### OS and web concepts
+- **Event-driven clients:** a socket plus reconnect with exponential backoff, and refetch after reconnect.
+- **Web security in the browser:** HttpOnly and SameSite cookies, the CSRF header, the Content-Security-Policy (why the theme cannot be set by an inline script).
+- **Accessibility as engineering:** WCAG contrast ratios, focus management, ARIA roles for menus.
+
+### Files to read
+`web/src/app/connection.tsx` (health loop and socket), `web/src/app/auth.tsx`, `web/src/app/App.tsx` (the gates), `web/src/styles/tokens.css`. Tests: `web/src/app/frontend.test.ts`, `web/e2e/foundation.spec.ts`.
+
+### Likely examiner questions
+
+**Q1. "The server crashes during the demo. What do the students' browsers do?"**
+The WebSocket closes. The status turns to "Reconnecting", then "Offline" with a banner counting down to the next retry. The data on screen stays, dimmed. Meanwhile the app asks `/api/health`. If the server is replaying its log, the browser shows the recovering page; when the server is ready, it shows "Recovery complete" and reloads the data. Sessions are saved on the server's disk (M7), so nobody has to sign in again. A Playwright test does exactly this with a real `kill -9`.
+
+**Q2. "Why not keep the login token in localStorage like many apps?"**
+Anything in localStorage can be read by any script that runs on the page. An HttpOnly cookie cannot be read by scripts at all; the browser only sends it to our server. SameSite=Strict stops other sites from sending it, and the CSP stops foreign scripts from running in the first place.
+
+### More questions to practise
+- Why does the status say "updated 3 s ago" and not just "Live"? *(It shows how fresh the data is, measured from the last thing the server sent.)*
+- Why is there no spinner while the page loads? *(DESIGN asks for content-shaped skeletons: the layout appears at once and nothing jumps when data arrives.)*
+- How is dark mode implemented? *(The same token names get different values under `prefers-color-scheme: dark` or `data-theme="dark"`; components never change.)*
+- Why does "Sign out" refuse to work while the server is unreachable? *(The session cookie is HttpOnly, so page scripts cannot delete it. Only the server can end the session. A browser-only sign-out would leave the next person at a shared lab PC signed in.)*
+

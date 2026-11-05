@@ -314,3 +314,69 @@ M7's acceptance needs "8 concurrent CLI clients", so a working `nexus` (`login`,
 
 ThreadSanitizer, running the M7 upload tests, found `nx_exthash_get_stats` reading the directory depth and page count without the directory lock while a split changed them. Before M6 nothing read statistics concurrently. The server's background thread now does so every 250 ms. Fix: the stats functions take the shared directory lock. All callers were checked: none holds the lock already.
 
+## D-034 Frontend packages and assets (M8)
+
+Added with the team's approval in this session:
+- **Geist and Geist Mono** variable woff2 files (OFL, license kept as `web/public/fonts/OFL-Geist.txt`), taken from Vercel's `geist` npm package 1.3.1. The files are copied in; the package is not a dependency. Served from `/fonts`, so nothing loads from the internet (lab networks).
+- **`lucide-react` 0.468.0** (allowed list). Only the imported icons end up in the bundle. One wrapper (`components/icons.tsx`) fixes size 18 and stroke 1.5.
+- **`@playwright/test` 1.56.1** (dev, allowed list). It drives the locally installed Google Chrome (`channel: 'chrome'`), so no browser download is needed. 1.49.1 was tried first and replaced because of advisory GHSA-7mvr-c777-76hp; `npm audit` reports 0 vulnerabilities.
+
+Not used: CSS-in-JS, UI kits, animation libraries (CLAUDE.md). Styles are three plain CSS files: tokens, base, components.
+
+## D-035 Frontend state: three small contexts (M8)
+
+- **ThemeProvider:** Light / Dark / System, stored in `localStorage`, applied as `data-theme` on `<html>` before the first render. An inline script in `index.html` would apply it earlier, but the CSP allows scripts from `'self'` only.
+- **ConnectionProvider:** one health loop (at start, every 1 s while recovering, with backoff while unreachable, and again whenever the socket is down) and one `LiveSocket` (reconnect after 1, 2, 4, 8, then every 10 s). `epoch` increments after a reconnect or a recovery, and screens refetch when it changes. `lastUpdated` is the last time anything arrived from the server, for "updated 3 s ago".
+- **AuthProvider:** the user comes from `/api/me` (the cookie is HttpOnly). Any 401 ends the session. Also, when the socket is down but the server answers, it probes `/api/me`. Without that probe, a session ended elsewhere (logout in another tab, account disabled) would make the socket fail forever and show "Reconnecting" instead of returning to sign-in. The Playwright test found this case.
+- **Gate (App.tsx):** recovering / recovery complete / unavailable become full-page calm states; unreachable before the user is known becomes a calm page; otherwise the routes run. Signed-out users go to `/signin`, and students who open admin pages go to Overview.
+- **Interim pages:** screens of M9–M11 show their title and one sentence saying they are not built yet. They contain no placeholder numbers (CLAUDE.md), so there is no mock mode and no `VITE_MOCK` code exists yet.
+
+## D-036 Two contrast failures in the DESIGN tokens (M8)
+
+Computing contrast for every token pair found:
+- **Input borders:** `--line-strong` is 1.66:1 (light) and 1.80:1 (dark) against the field and the page. WCAG 1.4.11 and DESIGN's own contrast floor require 3:1 for the boundary that identifies a text field. New tokens `--line-input` / `--line-input-hover` (light #7E8D92 / #6E7D82, dark #5E6E76 / #728188) are the lightest colors of the same hue that pass in both themes. `--line-strong` stays for hairline-strength borders such as the secondary button, whose text label identifies it.
+- **Danger text on the danger tint:** `--danger` on `--danger-bg` is 4.15:1 (light). Banners and form error notes now use `--ink` text on the tint. Field errors stay `--danger` on the page (4.70:1).
+
+DESIGN.md §2, §6 were updated first.
+
+## D-037 Playwright against a real nexusd (M8)
+
+`web/e2e/global-setup.ts` builds the server, creates a fresh data dir, runs `--init` and `--create-admin`, starts `nexusd` on a free port serving `web/dist`, and joins a student. Tests share it (one worker). The offline test kills it with SIGKILL and starts it again through `e2e/server.ts`.
+
+Two states cannot be held on a real server on demand, because recovery takes milliseconds: "recovering" and "unreachable on first load". For those two only, the test intercepts `/api/health` in the browser.
+
+Screenshots go to `web/screenshots/m8/` (git-ignored). Shots after a viewport change are taken without `fullPage`, because the full-page capture right after a resize stitched a stale header into the image.
+
+Run with `cd web && npm run e2e` (it builds the app first).
+
+## D-038 What the recovering page can truthfully say (M8)
+
+DESIGN §8.8 asked for "Replayed 1,204 of 1,530 log records" and, after recovery, "All files checked".
+- The server replays the log inside one call (`nx_engine_open`), and `/api/health` only knows the phase and elapsed time. The page therefore shows "Replaying the log, 3 s so far."
+- Recovery does not check files; `--fsck` does. So completion reads "Recovery complete. Every committed change is back in place."
+
+Exact record counts arrive afterwards in the `engine.recovery` event, for the Engine screen (M11). If live counts are wanted, the engine would need a progress callback from `replay_log` to the health handler. That is a small change, but not needed for M8.
+
+## D-039 M8 design review: what was fixed, what is left for M11 (M8)
+
+An independent Impeccable critique (sub-agent, 30 screenshots plus source) scored the screens **29/40 ("Good")** and found:
+- **P1, fixed:**
+  - Ticking countdowns sat inside live regions (offline banner, unreachable and recovering pages), so screen readers re-announced them every second. Only the state sentence is announced now; the countdown is `aria-hidden`.
+  - Menu items showed keyboard focus only as a 1.16:1 fill. They now get a 2 px inset `--shared` ring.
+  - The danger-text contrast was already fixed (D-036).
+- **P2, fixed:**
+  - Four `role="alert"` messages fired at once on an empty join submit. Field errors are no longer alerts; focus moves to the first invalid field and `aria-describedby` reads its error.
+  - An error used to replace the field's rule. The hint now stays and the error says what went wrong.
+  - Tighter spacing on short screens (`max-height: 900px`).
+  - The interim pages now say "Not available yet." with no rule over empty space.
+  - Hover styles apply only on devices that hover (no sticky hover after a tap).
+  - "Recovery complete" lost its stray period, and the calm column has a fixed width.
+- **Found while fixing (security):** signing out while the server was unreachable signed out only in the browser. The HttpOnly cookie stayed valid, so on a shared lab PC the next person would be signed in again. Sign out now needs the server and says so; a Playwright test checks it with the server killed.
+
+**Left on purpose, for M11 (system states), with the reason:**
+1. **Offline dimming.** DESIGN §8.8 says 60% opacity. That puts `--ink-2` text at about 2.7:1, below DESIGN's own 4.5:1 floor. Options: dim only data visuals, or raise to about 85%. This is a design decision for the team, so the spec value stays for now.
+2. **Live record counts while recovering** need a progress callback from the engine (D-038).
+3. **The join form at 1366×768** still scrolls about 150 px. That is acceptable for a four-field form; revisit if the projector demo shows it.
+4. **The header is about 96 px tall,** not DESIGN §7's "88 px area". The 88 assumes 24 px of content, but the 32 px avatar is taller; the nav no longer adds height.
+5. **The critique's evidence path:** the Impeccable detector script is not installed in this repo, so that half of the critique did not run. Rerun the critique with the plugin installed (PROMPT.md §1 step 6) during M14's polish pass.
+
