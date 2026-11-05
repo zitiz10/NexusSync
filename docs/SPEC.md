@@ -1,6 +1,6 @@
 # NexusSync — technical specification
 
-Version 1.2 (1.1: server portable to Linux, macOS, and Windows; in-repo crypto replaces OpenSSL; scripts in Python. 1.2: `recipes.dat` gains a 16-byte file header; superblock byte offsets and the doublewrite format written down; one transaction mutex replaces the checkpoint rwlock and the 256 index stripes in §9, see DECISIONS D-016. No WAL, chunker, or API changes). Source of truth for behavior, formats, and the API. Section numbers are referenced from `CLAUDE.md`; keep them stable.
+Version 1.3 (1.3: WAL segment files get a 16-byte header; recovery cut rules and the unsynced `CHECKPOINT` record written down in §5 and §8. 1.1: server portable to Linux, macOS, and Windows; in-repo crypto replaces OpenSSL; scripts in Python. 1.2: `recipes.dat` gains a 16-byte file header; superblock byte offsets and the doublewrite format written down; one transaction mutex replaces the checkpoint rwlock and the 256 index stripes in §9, see DECISIONS D-016. No WAL, chunker, or API changes). Source of truth for behavior, formats, and the API. Section numbers are referenced from `CLAUDE.md`; keep them stable.
 
 ## 1. Goals and non-goals
 
@@ -96,6 +96,8 @@ All integers little-endian, fixed width. Every format starts with a 4-byte magic
 **Superblock byte offsets:** magic 0, version 4, `seq` 8, `checkpoint_lsn` 16, `next_file_id` 24, `next_user_id` 32, `next_container_id` 36, `active_container_id` 40, `index_global_depth` 44, `bucket_page_count` 48, chunker params 52–79, `created_at` 80, `crc32` 88 (over bytes 0–87), zero padding to 4096. Copy `.a` holds odd `seq`, `.b` even.
 
 **Doublewrite file (`doublewrite.bin`):** header 16 bytes (magic `NXDW`, `u16` version, `u16 0`, `u64 checkpoint_lsn`); entries (`u32 file_id`, `u32 page_no`, `page[4096]`, `u32 crc32` over the entry's preceding 4104 bytes); trailer 12 bytes (magic `NXDT`, `u32 count`, `u32 crc32` over every preceding byte of the file). File ids: 0 `buckets.bin`, 1 `users.tbl`, 2 `files.tbl`, 3 `dir.bin`. Empty (length 0) when no checkpoint is in progress. A batch that is not complete and valid is ignored.
+
+**WAL segment file (`wal.NNNNNNNN`):** header 16 bytes (magic `NXWL`, `u16` version, `u16 0`, `u64 first_lsn`), then records. LSNs are consecutive across the whole log, and a segment's first record carries its `first_lsn`. A transaction (`BEGIN` … `COMMIT`) is written with one write and never split across segments; a segment is fsynced before the next is created, so only the newest segment can end in a torn record. `txn_id` is the LSN of the transaction's `BEGIN`; `CHECKPOINT` records have `txn_id` 0, are written outside transactions, and are not fsynced on their own (the next commit's fsync makes them durable). Payloads are at most 4096 bytes.
 
 **WAL record:** `u64 lsn`, `u64 txn_id`, `u8 type`, `u32 payload_len`, payload, `u32 crc32` over all preceding fields of the record. Types:
 
@@ -194,7 +196,7 @@ Creating, renaming, or deleting a file also needs the directory entry made durab
 **Recovery (on every start):**
 1. Load the newest valid superblock.
 2. If `doublewrite.bin` holds a complete, valid batch, copy its pages in place and `fsync` (repairs a torn checkpoint).
-3. Scan WAL from `checkpoint_lsn`. Stop at the first record with a bad CRC or short length and truncate there (torn tail).
+3. Scan WAL from `checkpoint_lsn`. Stop at the first record with a bad CRC, short length, or non-consecutive LSN. In the newest segment that is a torn tail; anywhere else it is damage, and the server refuses to start rather than drop committed transactions. Cut the log back to the end of the last `COMMIT` or `CHECKPOINT` record (this also removes a complete transaction that never committed); the next LSN continues from there, and is never at or below `checkpoint_lsn`.
 4. Group records by transaction; redo only committed ones, in LSN order, through the normal apply functions without logging.
 5. Run a checkpoint. Rebuild in-memory indexes. Emit `engine.recovery` with records replayed, transactions redone, duration.
 While recovering, `/api/health` returns `{"status":"recovering","progress":{...}}` and every other endpoint returns 503.

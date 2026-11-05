@@ -211,3 +211,29 @@ SPEC §6.4 needs 10 fixture files, about 33 MB in total. Committing them would b
 
 **When to change.** If a store grows past about 100,000 files, add hash maps keyed by username and by (owner, name). The function signatures in `catalog.h` already hide how lookups work.
 
+## D-020 Crash tests in process, with named crash points (M5)
+
+**Question.** M5 needs "crash between steps" tests and a 20-iteration crash loop. How do we crash at an exact step, on every OS?
+
+**Options.**
+1. *Named crash points* (`util/failpoint.h`). Code that writes durable state calls `nx_fail_hit("name")` between steps. A test arms one name; when it fires, that write and every later one is skipped, and the test abandons the engine without a checkpoint (`nx_engine_abandon`) and reopens it. "Torn" points first write half of the buffer.
+2. *fork() a child and kill -9 it* at a random time.
+3. *Only the real-process crash test* (`scripts/crash_test.py`, M13).
+
+**Chosen: 1 here, and 3 later as well.** Crash points hit exact steps (between the WAL fsync and the apply, between the doublewrite and the in-place writes...), so each test can state the one correct outcome. `fork()` does not exist on Windows, and random timing rarely lands between two particular steps. The real-process test in M13 covers what this cannot: an actual SIGKILL/TerminateProcess.
+
+**What it models.** A process crash (kill -9): data already handed to the OS stays, nothing after the crash point is written. It does not model power loss, where writes not yet fsynced may vanish; that depends on the drive honouring flushes (SPEC §8).
+
+**Cost when not testing.** One relaxed atomic load per crash point.
+
+## D-021 WAL cut rules after a crash (M5)
+
+- **Where a torn record can be.** Only at the end of the newest segment, because a segment is fsynced before the next one starts and a transaction is never split across segments. A bad record anywhere else means the log was damaged, and recovery refuses to open instead of truncating committed work away.
+- **What is cut.** Everything after the last `COMMIT` or `CHECKPOINT` record. That removes a torn tail and also a complete transaction that never got its `COMMIT`. Their LSNs are handed out again; this is safe because nothing from an uncommitted transaction ever reaches a page (pages change only after the commit fsync).
+- **Next LSN.** Never at or below the superblock's `checkpoint_lsn`, because pages may carry LSNs up to it and redo compares against them.
+- **`CHECKPOINT` records are not fsynced.** They only mark a safe end of the log. Recovery always starts from the superblock's `checkpoint_lsn`, never from a `CHECKPOINT` record, so losing one costs nothing.
+
+## D-022 Checkpoint LSN while a transaction is half applied (M5)
+
+D-013 said a checkpoint taken in the middle of applying a transaction uses "the LSN just before its `BEGIN`". The engine uses `stable_lsn`, the `COMMIT` LSN of the last fully applied transaction. That can be slightly lower (a `CHECKPOINT` record may sit between the two), which only means recovery replays a little more. Replay is idempotent, so lower is always safe; higher would not be.
+

@@ -5,6 +5,7 @@
 #include "platform/platform.h"
 #include "util/bytes.h"
 #include "util/crc32.h"
+#include "util/failpoint.h"
 #include "util/log.h"
 
 #include <inttypes.h>
@@ -134,6 +135,16 @@ int nx_superblock_write(const char *data_dir, nx_superblock *sb)
     plat_file *f = NULL;
     if (plat_file_open(path, PLAT_O_WRITE | PLAT_O_CREATE, &f) != 0)
         goto fail;
+    bool already = nx_fail_crashed();
+    if (nx_fail_hit("superblock.torn")) {
+        /* Tear inside the fields (all meaningful bytes are in the first
+         * 92), so the copy really is half old, half new. */
+        if (!already)
+            plat_pwrite_all(f, buf, 48, 0);
+        plat_file_close(f);
+        sb->seq--;
+        return -1;
+    }
     if (plat_pwrite_all(f, buf, sizeof buf, 0) != 0 || plat_fsync_file(f) != 0) {
         plat_file_close(f);
         goto fail;

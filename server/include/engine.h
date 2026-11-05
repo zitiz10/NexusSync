@@ -36,6 +36,7 @@ typedef struct {
     size_t pool_pages;       /* buffer_pool_pages */
     bool verify_on_read;
     bool verify_on_commit;
+    uint64_t wal_segment_size; /* bytes per WAL segment (64 MB) */
 } nx_engine_config;
 
 void nx_engine_config_defaults(nx_engine_config *cfg);
@@ -47,6 +48,22 @@ int nx_engine_create(const char *data_dir);
 int nx_engine_open(const nx_engine_config *cfg, nx_engine **out);
 /* Runs a final checkpoint, then frees everything. */
 int nx_engine_close(nx_engine *e);
+/* Tests only: frees everything without writing anything, as if the process
+ * had been killed at this moment. The next open runs recovery. */
+void nx_engine_abandon(nx_engine *e);
+
+/* What the last open had to do to recover (SPEC §8 "Recovery"). */
+typedef struct {
+    uint64_t pages_repaired;   /* copied in place from doublewrite.bin */
+    uint64_t records_replayed; /* records of committed transactions redone */
+    uint64_t txns_redone;
+    uint64_t txns_discarded;   /* found in the log without COMMIT */
+    uint64_t wal_bytes_cut;    /* torn or uncommitted tail removed */
+    uint64_t checkpoint_lsn;   /* where replay started */
+    uint64_t ms;
+} nx_engine_recovery;
+
+void nx_engine_last_recovery(nx_engine *e, nx_engine_recovery *out);
 
 /* ---- blocks ------------------------------------------------------------- */
 
@@ -157,6 +174,8 @@ typedef struct {
     uint64_t checkpoints;
     uint64_t last_checkpoint_pages;
     uint64_t last_checkpoint_ms;
+    uint64_t wal_bytes;
+    uint32_t wal_segments;
     nx_bufpool_stats pool;
     nx_exthash_stats index;
 } nx_engine_stats;

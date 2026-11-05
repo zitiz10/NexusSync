@@ -7,7 +7,7 @@ Platforms: macOS (verified locally on Apple Silicon), Linux and Windows (verifie
 
 Current scope agreed with the team: M1–M7 in this run; M8–M14 in later sessions.
 
-**Status (2026-11-05): M1–M4 done and committed. Next session: start at M5.** See "Handoff notes for M5" below.
+**Status (2026-11-05): M1–M5 done and committed. Next: M6.** See "Handoff notes for M6" below.
 
 ## M1 Scaffold
 - [x] Repo layout per `CLAUDE.md` (plus `server/src/platform/`); module folders fill in from M2
@@ -44,10 +44,13 @@ Current scope agreed with the team: M1–M7 in this run; M8–M14 in later sessi
 - [x] Bug fixed in M3 code: index split stamped pages with the current record's LSN, so redo lost the insert that caused a split (D-018, regression test added)
 
 ## M5 WAL, checkpoint, recovery
-- [ ] WAL encode/decode, torn-tail truncation
-- [ ] Checkpoint with doublewrite; torn-checkpoint repair test
-- [ ] Crash-between-steps tests (failpoints)
-- [ ] In-process crash loop of 20 iterations
+- [x] WAL encode/decode, torn-tail truncation: log cut at each of 294 byte positions of the last transaction always recovers to the previous commit and appends continue; uncommitted complete transaction removed; 12-segment rollover, deletion below a checkpoint, reading from a checkpoint LSN; damage in an older segment refused (5/5)
+- [x] Checkpoint with doublewrite; torn-checkpoint repair test: torn page (first and 4th page of the batch), crash after staging, before superblock, torn superblock (falls back to the older copy and replays 8 transactions onto newer pages), before clearing; all repaired, fsck clean. Without `doublewrite.bin` a torn page stops the store from opening (bucket page checksum mismatch)
+- [x] Crash-between-steps tests (named crash points, D-020): 19 cases across upload, commit, delete, checkpoint, each with its exact expected outcome, fsck clean, store keeps working afterwards
+- [x] In-process crash loop of 20 iterations: 315 random operations, 14 crashes inside an operation, 102 transactions redone, 17 pages repaired; recovered state matched the committed-state model and fsck was clean every time
+- [x] Committed work survives a kill with no checkpoint since open (22 transactions replayed); ids continue past replayed ones, including deleted ids
+- [x] ThreadSanitizer clean on WAL, recovery, and engine tests (this found a test bug: freeing an uninitialized commit result after an early crash)
+- [x] Full suite passes: `python3 scripts/check.py` (70 C tests in 11 executables under ASan+UBSan, web 16/16), `-Werror` clean
 
 ## M6 HTTP, WebSocket, static, auth
 - [ ] Parser tests incl. malformed and oversized input
@@ -64,20 +67,17 @@ Current scope agreed with the team: M1–M7 in this run; M8–M14 in later sessi
 ## M8–M14
 Not started (later sessions). See SPEC §14.
 
-## Handoff notes for M5 (read before starting)
+## Handoff notes for M6 (read before starting)
 
-**State of the repo.** `main` is clean at the M4 commit. No GitHub remote yet; do not push.
+**State of the repo.** `main` is clean at the M5 commit. No GitHub remote yet; do not push.
 
-**Where M5 plugs in.**
-- `engine.c: log_and_apply` has a marked point (`---- M5: WAL append + fsync here`). LSNs are currently handed out in memory (`e->next_lsn`); the WAL must take over that counter, write BEGIN, the records, and COMMIT (types and payloads in `engine/logrec.h`, txn id = BEGIN's LSN), and fsync before the apply loop runs.
-- `apply_record(e, type, payload, len, lsn, redo)` is already redo-capable. Recovery replays committed records with `redo = true`; nothing else changes pages.
-- `checkpoint_locked(e, lsn)` already does SPEC §8 steps 2–5 (doublewrite, in-place writes, fsyncs, superblock, clear). M5 adds: delete WAL segments entirely below the checkpoint LSN, log a `CHECKPOINT` record, the 50%-dirty background trigger, and the `engine.checkpoint` event.
-- Doublewrite repair already runs at the start of `nx_engine_open` (recovery step 2). M5 must add the torn-checkpoint *tests* (crash between staging, in-place writes, and the superblock).
-- Stats counters (`logical`, `physical`, `unique_blocks`, `saved`) are only correct when changes are applied once; after redo, recompute them with `init_stats` instead of trusting increments.
-- Next ids after recovery: `max(superblock, catalog max + 1, max id seen in replayed records + 1)` for files and users (open already does the first two).
-- `e->broken` is set if an apply fails after the commit point; writes are refused until restart.
+**Engine pieces M6/M7 still owe SPEC §8 (they need the server loop):**
+- *Background checkpointer:* a thread that calls `nx_engine_checkpoint` every `checkpoint_interval_s` (60 s) and when dirty frames pass 50%. Today checkpoints only run when a transaction finds the pool over 50% dirty, on `NX_BP_FULL`, and at open/close, so with light traffic the WAL grows until restart.
+- *Events:* `engine.checkpoint` (duration, pages: `nx_engine_get_stats` has `last_checkpoint_ms` / `last_checkpoint_pages`) and `engine.recovery` (`nx_engine_last_recovery`).
+- *`/api/health` while recovering:* recovery runs inside `nx_engine_open` today. To answer `{"status":"recovering"}` the server must start listening before opening the engine, and open it on another thread.
+- *`nexusd --init`, `--fsck`, `--create-admin`:* `main.c` still only does `--version`. `nx_engine_create`, `nx_engine_fsck`, and `nx_engine_add_user` exist; config parsing (`util/config.c`) is needed first. M7's acceptance runs `--fsck`.
 
-**M5 acceptance (SPEC §14).** Torn-tail, torn-checkpoint (doublewrite), and crash-between-steps tests; an in-process crash loop of 20 iterations.
+**Testing hooks.** `util/failpoint.h` crash points and `nx_engine_abandon` are available for M7 tests too (crash during an HTTP upload). The real-process kill test is `scripts/crash_test.py` (M7/M13).
 
 ## Open problems
 - **Windows and Linux not yet verified.** `plat_win32.c` and the Linux paths of `plat_posix.c` (getrandom, MSG_NOSIGNAL) have not been compiled. They will be once the repo is pushed to GitHub and CI runs, or when a teammate runs `make -C server test` on a Windows laptop (MSYS2) or Linux.

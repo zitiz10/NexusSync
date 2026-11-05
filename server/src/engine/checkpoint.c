@@ -4,6 +4,7 @@
 #include "platform/platform.h"
 #include "util/bytes.h"
 #include "util/crc32.h"
+#include "util/failpoint.h"
 #include "util/log.h"
 
 #include <inttypes.h>
@@ -34,6 +35,15 @@ int nx_dw_write(const char *path, const nx_dw_page *pages, size_t n, uint64_t ch
 
     plat_file *f = NULL;
     int rc = -1;
+    bool already = nx_fail_crashed();
+    if (nx_fail_hit("doublewrite.torn")) {
+        if (!already && plat_file_open(path, PLAT_O_WRITE | PLAT_O_CREATE, &f) == 0) {
+            plat_pwrite_all(f, buf, total / 2, 0);
+            plat_file_close(f);
+        }
+        free(buf);
+        return -1;
+    }
     if (plat_file_open(path, PLAT_O_WRITE | PLAT_O_CREATE, &f) == 0) {
         rc = plat_pwrite_all(f, buf, total, 0);
         if (rc == 0)

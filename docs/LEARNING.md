@@ -272,3 +272,68 @@ The commit record points at the recipe by offset. If the recipe were written aft
 - Why check that chunks exist twice during a commit? *(The first check, without the lock, gives a fast 409 before anything is written. The second, under the transaction mutex, is the one that counts: cleanup also runs under that mutex, so no block can disappear between the check and the `REF_INC`.)*
 - What does the doublewrite file protect against that the WAL does not? *(A torn page. Redo needs a readable page to apply changes to; if a crash leaves a page half old, half new, its CRC fails and there is nothing to redo onto. The complete copy in the doublewrite file restores it.)*
 
+## M5 — Write-ahead log, checkpoints, and crash recovery
+
+### What it does
+- **The write-ahead log** (`engine/wal.c`) records every change before any page changes. A transaction is written as `BEGIN`, its records, `COMMIT`, in one write, then fsynced. **That fsync is the commit point:** once it returns, the change survives a crash.
+- **Checkpoints** (`checkpoint_locked` in `engine/engine.c`) copy dirty pages to disk safely (doublewrite first), write a new superblock saying "everything up to LSN L is in the pages", then delete log segments that only hold records up to L.
+- **Recovery** (`replay_log` in `engine.c`) runs on every start:
+  1. load the newest valid superblock;
+  2. if `doublewrite.bin` holds a complete batch, copy it in place (repairs torn pages);
+  3. read the log after L, cut off a torn or uncommitted tail;
+  4. redo every committed transaction through the normal `apply_record`, with `redo = true`;
+  5. checkpoint, recount statistics.
+
+### The rule that makes it work: redo-only + no-steal
+- *No-steal*: a changed page never reaches disk before a checkpoint. So the pages on disk always show the state as of the last checkpoint, and never contain anything uncommitted.
+- *Redo-only log*: after a crash we only need to **redo** committed work that came after the checkpoint. There is no undo, because uncommitted work never touched the pages.
+- *Idempotent redo*: replaying a record that is already in a page does nothing (page LSN for the index, "by key" for the catalog). So it does not matter exactly where the crash happened.
+
+### Timeline of one upload, and what a crash at each point leaves
+| Crash after… | After restart |
+|---|---|
+| half a block written to a container | file absent; orphan bytes for compaction |
+| blocks fsynced, `CHUNK_ADD` not logged | file absent; orphan bytes |
+| `CHUNK_ADD` committed | blocks indexed with refcount 0 (cleanup frees them after the grace period) |
+| recipe written, commit not logged | file absent; dead recipe bytes |
+| commit record written (even before fsync, for a process crash) | **file present**, redone from the log |
+| commit fsynced, pages half updated | **file present**; redo skips what is there |
+
+`tests/unit/test_recovery.c` crashes at each of these points (and at every step of a checkpoint) and checks the exact outcome plus fsck.
+
+### Torn pages and the doublewrite file
+A 4 KB page write is not atomic on most drives: power loss can leave half old, half new. The page's CRC then fails, and **redo cannot help**, because redo needs a readable page to apply changes to. So a checkpoint first writes all pages to `doublewrite.bin` and fsyncs it. If a page is torn later, the complete copy is restored at startup. The test `test_torn_page_without_doublewrite` deletes that file after a torn checkpoint: the store then refuses to open ("page checksum mismatch") instead of serving damaged data.
+
+### How we crash on purpose
+Named *crash points* (`util/failpoint.h`, DECISIONS D-020). A test arms, say, `txn.after_commit`. When the engine reaches it, that write and every later one is skipped, and the test abandons the engine with no checkpoint, like `kill -9`. Reopening runs recovery. "Torn" points first write half of the buffer. The crash loop does this 20 times at random points during random uploads, deletes, user changes, and checkpoints, and checks the recovered store against a model of what was committed.
+
+### Measured (ASan build, macOS)
+- Cutting the log at each of 294 byte positions inside the last transaction: recovery always returns to the previous commit, and new appends continue cleanly.
+- 19 crash-between-steps cases: every outcome as expected, fsck clean, the store keeps working.
+- Torn superblock: recovery falls back to the older copy and replays 8 transactions on top of pages that already contain them, and fsck is clean. This shows page-LSN redo working.
+- Crash loop: 20 kills over 315 operations, 14 at a crash point inside an operation; 102 transactions redone, 17 pages repaired; the state matched the model every time.
+
+### OS and DBMS concepts
+- **Write-ahead logging, commit point, durability (DBMS):** the "D" in ACID.
+- **ARIES-style redo with page LSNs (DBMS):** idempotent recovery.
+- **No-steal / no-force buffer policy (DBMS):** why there is no undo log.
+- **Checkpointing and log truncation (DBMS):** recovery time stays short, and the log does not grow forever.
+- **fsync and its OS differences (OS):** `F_FULLFSYNC` on macOS, `FlushFileBuffers` on Windows (D-003).
+- **Atomicity of writes, torn writes (OS):** why CRCs and the doublewrite file exist.
+
+### Files to read
+`engine/wal.h` (rules at the top), `wal.c` (`nx_wal_recover`); `engine.c`: `log_and_apply` (commit point), `checkpoint_locked`, `replay_log` / `replay_record`. Tests: `tests/unit/test_wal.c`, `test_recovery.c`.
+
+### Likely examiner questions
+
+**Q1. "The server is killed right after the log fsync but before the index is updated. Is the file there after restart?"**
+Yes. The `COMMIT` record is durable, so recovery finds the transaction in the log and redoes it: `REF_INC` for each block, and `FILE_ADD`. The test case `txn.after_commit` does exactly this and checks the file reads back byte for byte. If the crash had come before the fsync, the record could be lost (on power loss) or kept (on a process crash), and both are consistent states.
+
+**Q2. "Why do you need both a WAL and a doublewrite file?"**
+They protect against different failures. The WAL protects *transactions*: committed changes not yet in the pages are redone. The doublewrite file protects *pages*: if a checkpoint is interrupted halfway through writing a page, that page is garbage, and there is nothing for the WAL to redo onto. We copy the intact version back from the doublewrite file first, then redo.
+
+### More questions to practise
+- Why may a record be applied twice during recovery without harm? *(Index changes compare the page LSN and skip; catalog changes are by key, so adding an existing file or deleting a missing one does nothing.)*
+- Why is a damaged record in an *older* log segment treated differently from one at the end? *(A crash can only tear the very end of the log. Damage earlier means the disk lost data, and truncating there would silently throw away committed transactions, so the server refuses to start and reports it.)*
+- Why do you never hand out an LSN at or below the checkpoint LSN after a crash? *(Pages may already carry LSNs up to it. A new change with a smaller LSN would be wrongly skipped as "already applied" by the next recovery.)*
+

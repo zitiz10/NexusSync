@@ -22,7 +22,9 @@
 #include "engine/container.h"
 #include "engine/logrec.h"
 #include "engine/superblock.h"
+#include "engine/wal.h"
 #include "platform/platform.h"
+#include "util/failpoint.h"
 #include "util/hmap.h"
 #include "util/log.h"
 
@@ -52,12 +54,15 @@ struct nx_engine {
     nx_catalog *cat;
     nx_recipes *rec;
     nx_containers *ct;
+    nx_wal *wal;
 
     pthread_mutex_t txn_mu;
     /* Under txn_mu: */
     uint64_t next_lsn;   /* next LSN to hand out */
     uint64_t stable_lsn; /* every record <= this is fully applied */
-    bool broken;         /* an apply failed after the commit point */
+    bool broken;         /* a write failed after the commit point, or the log failed */
+    bool recovering;     /* replaying the log: checkpoints keep the log intact */
+    nx_engine_recovery rinfo;
 
     _Atomic uint64_t next_file_id;
     _Atomic uint64_t last_lsn; /* copy of stable_lsn for readers of stats */
@@ -72,6 +77,7 @@ void nx_engine_config_defaults(nx_engine_config *cfg)
     cfg->pool_pages = 4096;
     cfg->verify_on_read = true;
     cfg->verify_on_commit = true;
+    cfg->wal_segment_size = NX_WAL_DEFAULT_SEGMENT;
 }
 
 static void hex8(const uint8_t hash[32], char out[17])
@@ -111,6 +117,7 @@ int nx_engine_create(const char *data_dir)
 /* Copies a complete doublewrite batch in place (recovery step 2). */
 static int repair_from_doublewrite(nx_engine *e)
 {
+    e->rinfo.pages_repaired = 0;
     nx_dw_page *pages;
     uint8_t *store;
     size_t n;
@@ -146,9 +153,11 @@ static int repair_from_doublewrite(nx_engine *e)
     free(store);
     if (rc == 0)
         rc = nx_dw_clear(e->dw_path);
-    if (rc == 0)
+    if (rc == 0) {
+        e->rinfo.pages_repaired = n;
         LOG_INFO("engine", "repaired pages from doublewrite pages=%zu checkpoint_lsn=%" PRIu64, n,
                  lsn);
+    }
     return rc;
 }
 
@@ -223,12 +232,28 @@ static int checkpoint_locked(nx_engine *e, uint64_t lsn)
     if (rc != 0 || (b.n == 0 && sb_same))
         goto out;
 
+    if (nx_fail_hit("ckpt.begin")) {
+        rc = -1;
+        goto out;
+    }
     if (b.n > 0) {
         /* 1. Stage every page in the doublewrite file and fsync it. */
         rc = nx_dw_write(e->dw_path, b.pages, b.n, lsn);
+        if (rc == 0 && nx_fail_hit("ckpt.after_doublewrite"))
+            rc = -1;
         /* 2. Write each page in place, then fsync each file. */
         for (size_t i = 0; rc == 0 && i < b.n; i++) {
             const nx_dw_page *p = &b.pages[i];
+            bool already = nx_fail_crashed();
+            if (nx_fail_hit("ckpt.page.torn")) {
+                /* Crash in the middle of overwriting a page: a torn page,
+                 * which only the doublewrite copy can repair. */
+                if (!already)
+                    plat_pwrite_all(e->files[p->file_id], p->data, NX_PAGE_SIZE / 2,
+                                    (uint64_t)p->page_no * NX_PAGE_SIZE);
+                rc = -1;
+                break;
+            }
             if (p->file_id == FID_DIR)
                 rc = plat_pwrite_all(e->files[FID_DIR], p->data, NX_PAGE_SIZE,
                                      (uint64_t)p->page_no * NX_PAGE_SIZE);
@@ -240,6 +265,8 @@ static int checkpoint_locked(nx_engine *e, uint64_t lsn)
         if (rc == 0 && dir_dirty)
             rc = plat_fsync_file(e->files[FID_DIR]);
     }
+    if (rc == 0 && nx_fail_hit("ckpt.before_superblock"))
+        rc = -1;
     /* 3. New superblock copy pointing at this checkpoint. */
     if (rc == 0) {
         nx_superblock sb = e->sb;
@@ -253,12 +280,32 @@ static int checkpoint_locked(nx_engine *e, uint64_t lsn)
         if (rc == 0)
             e->sb = sb;
     }
+    if (rc == 0 && nx_fail_hit("ckpt.before_clear"))
+        rc = -1;
     /* 4. Empty the doublewrite file; the pages are now clean. */
     if (rc == 0 && b.n > 0) {
         rc = nx_dw_clear(e->dw_path);
         if (rc == 0) {
             nx_bufpool_mark_all_clean(e->bp);
             nx_exthash_dir_dirty(e->ix, true);
+        }
+    }
+    /* 5. The log before the checkpoint is no longer needed. While
+     * recovering, the log is being read, so it is left alone. */
+    if (rc == 0 && !e->recovering) {
+        if (nx_wal_truncate_below(e->wal, lsn) != 0)
+            LOG_WARN("engine", "could not delete old log segments lsn=%" PRIu64, lsn);
+        uint8_t pl[8];
+        for (int k = 0; k < 8; k++)
+            pl[k] = (uint8_t)(lsn >> (8 * k));
+        nx_wal_rec cr = {e->next_lsn, 0, NX_REC_CHECKPOINT, 8, pl};
+        /* Not fsynced: it only marks a safe end of the log; the next
+         * commit's fsync makes it durable. */
+        if (nx_wal_append(e->wal, &cr, 1, false) != 0) {
+            e->broken = true;
+            rc = -1;
+        } else {
+            e->next_lsn++;
         }
     }
     if (rc == 0) {
@@ -523,20 +570,41 @@ static int log_and_apply(nx_engine *e, const nx_txn *t)
         checkpoint_locked(e, e->stable_lsn) != 0)
         return -1;
 
+    nx_wal_rec *recs = malloc((t->n + 2) * sizeof *recs);
+    if (!recs)
+        return -1;
     uint64_t begin = e->next_lsn;
     uint64_t commit = begin + 1 + t->n;
+    recs[0] = (nx_wal_rec){begin, begin, NX_REC_BEGIN, 0, NULL};
+    for (size_t i = 0; i < t->n; i++)
+        recs[i + 1] = (nx_wal_rec){begin + 1 + i, begin, t->recs[i].type, t->recs[i].len,
+                                   nx_txn_payload(t, i)};
+    recs[t->n + 1] = (nx_wal_rec){commit, begin, NX_REC_COMMIT, 0, NULL};
+    /* The commit point: BEGIN..COMMIT written and fsynced. Only after this
+     * may pages change (redo-only logging with no-steal, SPEC §8). */
+    int rc = nx_wal_append(e->wal, recs, t->n + 2, true);
+    free(recs);
+    if (rc != 0) {
+        e->broken = true; /* the log refuses further writes until restart */
+        return -1;
+    }
     e->next_lsn = commit + 1;
-    /* ---- M5: WAL append + fsync here (commit point). ---- */
+    if (nx_fail_hit("txn.after_commit")) {
+        e->broken = true;
+        return -1;
+    }
 
     for (size_t i = 0; i < t->n; i++) {
         const nx_txn_rec *r = &t->recs[i];
-        if (apply_record(e, r->type, nx_txn_payload(t, i), r->len, begin + 1 + i, false) != 0) {
+        if ((i == 1 && nx_fail_hit("txn.mid_apply")) ||
+            apply_record(e, r->type, nx_txn_payload(t, i), r->len, begin + 1 + i, false) != 0) {
             /* The transaction is committed but not fully applied: the pages
              * no longer match the log. Stop accepting writes; a restart
-             * (M5 recovery) replays the transaction from the WAL. */
+             * replays the transaction from the WAL. */
             e->broken = true;
-            LOG_ERROR("engine", "apply failed, engine is read-only until restart lsn=%" PRIu64,
-                      begin + 1 + i);
+            if (!nx_fail_crashed())
+                LOG_ERROR("engine", "apply failed, engine is read-only until restart lsn=%" PRIu64,
+                          begin + 1 + i);
             return -1;
         }
     }
@@ -610,6 +678,7 @@ static int page_count_of(plat_file *f, const char *path, uint32_t *pages)
 
 static void free_engine(nx_engine *e)
 {
+    nx_wal_close(e->wal);
     nx_containers_close(e->ct);
     nx_recipes_close(e->rec);
     nx_catalog_close(e->cat);
@@ -620,6 +689,93 @@ static void free_engine(nx_engine *e)
             LOG_ERROR("engine", "close failed path=%s", e->paths[i]);
     pthread_mutex_destroy(&e->txn_mu);
     free(e);
+}
+
+/* ---- recovery: replay committed transactions from the log (SPEC §8) ---- */
+
+typedef struct {
+    nx_engine *e;
+    nx_txn pending; /* records of the transaction being read */
+    uint64_t begin; /* its BEGIN lsn (= txn id) */
+    bool open;
+    uint64_t max_file_id;
+    uint32_t max_user_id;
+} replay_ctx;
+
+static int replay_record(const nx_wal_rec *r, void *vctx)
+{
+    replay_ctx *x = vctx;
+    nx_engine *e = x->e;
+    switch (r->type) {
+    case NX_REC_BEGIN:
+        if (x->open) /* cannot happen with one writer; count it, drop it */
+            e->rinfo.txns_discarded++;
+        nx_txn_free(&x->pending);
+        nx_txn_init(&x->pending);
+        x->open = true;
+        x->begin = r->lsn;
+        return 0;
+    case NX_REC_CHECKPOINT:
+        return 0;
+    case NX_REC_COMMIT:
+        if (!x->open || r->txn_id != x->begin) {
+            LOG_WARN("engine", "COMMIT without its BEGIN ignored lsn=%" PRIu64, r->lsn);
+            return 0;
+        }
+        /* Redo every record of the committed transaction, in LSN order,
+         * through the normal apply code (redo=true skips what is there). */
+        for (size_t i = 0; i < x->pending.n; i++) {
+            const nx_txn_rec *tr = &x->pending.recs[i];
+            const uint8_t *p = nx_txn_payload(&x->pending, i);
+            if (apply_record(e, tr->type, p, tr->len, x->begin + 1 + i, true) != 0) {
+                LOG_ERROR("engine", "redo failed lsn=%" PRIu64 " type=%s", x->begin + 1 + i,
+                          nx_rec_type_name(tr->type));
+                return -1;
+            }
+            nx_file f;
+            nx_user u;
+            if (tr->type == NX_REC_FILE_ADD && nx_file_decode(p, tr->len, &f) == 0 &&
+                f.id > x->max_file_id)
+                x->max_file_id = f.id;
+            if ((tr->type == NX_REC_USER_ADD || tr->type == NX_REC_USER_UPDATE) &&
+                nx_user_decode(p, tr->len, &u) == 0 && u.id > x->max_user_id)
+                x->max_user_id = u.id;
+        }
+        e->rinfo.records_replayed += x->pending.n;
+        e->rinfo.txns_redone++;
+        e->stable_lsn = r->lsn; /* a checkpoint now may start after this txn */
+        nx_txn_free(&x->pending);
+        x->open = false;
+        return 0;
+    default:
+        if (!x->open || r->txn_id != x->begin) {
+            LOG_WARN("engine", "record outside a transaction ignored lsn=%" PRIu64, r->lsn);
+            return 0;
+        }
+        return nx_txn_add(&x->pending, r->type, r->payload, r->len);
+    }
+}
+
+static int replay_log(nx_engine *e, replay_ctx *x)
+{
+    memset(x, 0, sizeof *x);
+    x->e = e;
+    nx_txn_init(&x->pending);
+    e->stable_lsn = e->sb.checkpoint_lsn;
+    e->recovering = true;
+    nx_wal_recovery wr;
+    int rc = nx_wal_recover(e->wal, e->sb.checkpoint_lsn, replay_record, x, &wr);
+    e->recovering = false;
+    if (x->open)
+        e->rinfo.txns_discarded++; /* never committed; the log cut it */
+    nx_txn_free(&x->pending);
+    if (rc != 0)
+        return -1;
+    e->rinfo.wal_bytes_cut = wr.bytes_cut;
+    e->next_lsn = nx_wal_next_lsn(e->wal);
+    /* Everything kept in the log is committed and now applied. */
+    e->stable_lsn = e->next_lsn - 1;
+    return 0;
 }
 
 int nx_engine_open(const nx_engine_config *cfg, nx_engine **out)
@@ -689,23 +845,47 @@ int nx_engine_open(const nx_engine_config *cfg, nx_engine **out)
     if (nx_containers_open(path, cfg->container_size, &e->ct) != 0)
         goto fail;
 
-    /* Next ids: never reuse an id that is already in the catalog (SPEC §8
-     * recovery; M5 also counts ids seen in replayed records). */
-    uint64_t nf = e->sb.next_file_id, cmax = nx_catalog_max_file_id(e->cat);
-    atomic_store(&e->next_file_id, nf > cmax + 1 ? nf : cmax + 1);
+    uint64_t t0 = plat_now_mono_ms();
+    e->rinfo.checkpoint_lsn = e->sb.checkpoint_lsn;
+    snprintf(path, sizeof path, "%s/wal", e->dir);
+    if (nx_wal_open(path, cfg->wal_segment_size, e->sb.checkpoint_lsn + 1, &e->wal) != 0)
+        goto fail;
+    replay_ctx rx;
+    if (replay_log(e, &rx) != 0)
+        goto fail;
+
+    /* Next ids (SPEC §8 recovery): never reuse an id that is in the catalog
+     * or that a replayed record used (it may have been deleted since). */
+    uint64_t nf = e->sb.next_file_id, cmax = nx_catalog_max_file_id(e->cat) + 1;
+    if (nf < cmax)
+        nf = cmax;
+    if (nf < rx.max_file_id + 1)
+        nf = rx.max_file_id + 1;
+    atomic_store(&e->next_file_id, nf);
     uint32_t nu = nx_catalog_max_user_id(e->cat) + 1;
+    if (nu < rx.max_user_id + 1)
+        nu = rx.max_user_id + 1;
     if (e->sb.next_user_id < nu)
         e->sb.next_user_id = nu;
-    e->stable_lsn = e->sb.checkpoint_lsn;
-    e->next_lsn = e->sb.checkpoint_lsn + 1;
     atomic_store(&e->ckpt_lsn, e->sb.checkpoint_lsn);
     atomic_store(&e->last_lsn, e->stable_lsn);
+    /* Redo may have counted changes the pages already had: recount. */
+    atomic_store(&e->logical, 0);
+    atomic_store(&e->physical, 0);
+    atomic_store(&e->unique_blocks, 0);
+    atomic_store(&e->saved, 0);
     if (init_stats(e) != 0)
         goto fail;
-    /* A brand-new index exists only in the pool: make it durable now so the
-     * files on disk always form a complete store. */
+    /* Recovery step 5: checkpoint, so the replayed work is in the pages and
+     * the old log can go. Also makes a brand-new index durable. */
     if (checkpoint_locked(e, e->stable_lsn) != 0)
         goto fail;
+    e->rinfo.ms = plat_now_mono_ms() - t0;
+    LOG_INFO("engine",
+             "recovery records_replayed=%" PRIu64 " txns_redone=%" PRIu64 " txns_discarded=%" PRIu64
+             " wal_bytes_cut=%" PRIu64 " pages_repaired=%" PRIu64 " ms=%" PRIu64,
+             e->rinfo.records_replayed, e->rinfo.txns_redone, e->rinfo.txns_discarded,
+             e->rinfo.wal_bytes_cut, e->rinfo.pages_repaired, e->rinfo.ms);
     LOG_INFO("engine", "opened dir=%s files=%zu blocks=%" PRIu64 " checkpoint_lsn=%" PRIu64, e->dir,
              nx_catalog_file_count(e->cat), atomic_load(&e->unique_blocks), e->sb.checkpoint_lsn);
     *out = e;
@@ -725,6 +905,14 @@ int nx_engine_close(nx_engine *e)
     free_engine(e);
     return rc;
 }
+
+void nx_engine_abandon(nx_engine *e)
+{
+    if (e)
+        free_engine(e); /* closes handles; writes nothing */
+}
+
+void nx_engine_last_recovery(nx_engine *e, nx_engine_recovery *out) { *out = e->rinfo; }
 
 nx_catalog *nx_engine_catalog(nx_engine *e) { return e->cat; }
 
@@ -1346,6 +1534,10 @@ void nx_engine_get_stats(nx_engine *e, nx_engine_stats *out)
     out->checkpoints = atomic_load(&e->checkpoints);
     out->last_checkpoint_pages = atomic_load(&e->last_ckpt_pages);
     out->last_checkpoint_ms = atomic_load(&e->last_ckpt_ms);
+    nx_wal_stats ws;
+    nx_wal_get_stats(e->wal, &ws);
+    out->wal_bytes = ws.bytes;
+    out->wal_segments = ws.segments;
     nx_bufpool_get_stats(e->bp, &out->pool);
     nx_exthash_get_stats(e->ix, &out->index);
 }

@@ -12,6 +12,7 @@
 #include "platform/platform.h"
 #include "util/bytes.h"
 #include "util/crc32.h"
+#include "util/failpoint.h"
 #include "util/log.h"
 
 #include <inttypes.h>
@@ -294,6 +295,13 @@ int nx_containers_append(nx_containers *c, const uint8_t hash[32], const uint8_t
     memcpy(r + NX_RECORD_HEADER, data, len);
     /* One write for header and data keeps a torn append confined to the
      * tail; the CRC tells a complete record from a partial one. */
+    bool already = nx_fail_crashed();
+    if (nx_fail_hit("container.append.torn")) {
+        if (!already)
+            plat_pwrite_all(c->active, r, (size_t)rec / 2, c->append_off);
+        pthread_mutex_unlock(&c->append_mu);
+        return -1;
+    }
     if (plat_pwrite_all(c->active, r, (size_t)rec, c->append_off) != 0) {
         LOG_ERROR("container", "append failed id=%" PRIu32 " err=\"%s\"", c->active_id,
                   plat_last_error());

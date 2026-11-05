@@ -4,6 +4,7 @@
 #include "platform/platform.h"
 #include "util/bytes.h"
 #include "util/crc32.h"
+#include "util/failpoint.h"
 #include "util/log.h"
 
 #include <inttypes.h>
@@ -135,7 +136,16 @@ int nx_recipes_append(nx_recipes *r, uint64_t file_id, const nx_chunk_ref *chunk
 
     pthread_mutex_lock(&r->mu);
     uint64_t off = r->end;
-    int rc = plat_pwrite_all(r->f, buf, n, off);
+    bool already = nx_fail_crashed();
+    int rc;
+    if (nx_fail_hit("recipe.append.torn")) {
+        if (!already)
+            plat_pwrite_all(r->f, buf, n / 2, off);
+        pthread_mutex_unlock(&r->mu);
+        free(buf);
+        return -1;
+    }
+    rc = plat_pwrite_all(r->f, buf, n, off);
     if (rc == 0)
         rc = plat_fsync_file(r->f);
     if (rc == 0) {
