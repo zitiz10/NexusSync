@@ -63,7 +63,7 @@ static int insert(env *e, const nx_index_entry *ent, uint64_t lsn)
         nx_exthash_unlock(e->ex);
         if (rc == NX_EXT_NEED_SPLIT) {
             nx_exthash_lock_exclusive(e->ex);
-            rc = nx_exthash_split(e->ex, ent->hash, lsn);
+            rc = nx_exthash_split(e->ex, ent->hash);
             nx_exthash_unlock(e->ex);
             if (rc == NX_BP_FULL)
                 checkpoint(e);
@@ -389,6 +389,50 @@ static void test_redo_skips_applied_changes(void)
     env_close(&e);
 }
 
+/* Regression (found in M4): redo of an insert that lands in a full bucket.
+ * The split must not stamp the pages with the record's LSN, or the retried
+ * insert would be skipped as "already applied" and the entry lost. */
+static void test_redo_insert_across_split(void)
+{
+    env e;
+    REQUIRE(env_open(&e, "ex_redo_split", 64, NULL, 0, true) == 0);
+    /* A fresh index has one bucket page that every slot points at, so the
+     * first 78 entries fill it whatever their hashes are. */
+    nx_index_entry ent, got;
+    uint64_t lsn = 1;
+    for (uint64_t i = 0; i < NX_BUCKET_CAPACITY; i++, lsn++) {
+        make_entry(i, &ent);
+        nx_exthash_lock_shared(e.ex);
+        int rc = nx_exthash_insert(e.ex, &ent, lsn, true);
+        nx_exthash_unlock(e.ex);
+        REQUIRE(rc == 0);
+    }
+    make_entry(NX_BUCKET_CAPACITY, &ent);
+    int rc = -1;
+    for (int attempt = 0; attempt < 8; attempt++) {
+        nx_exthash_lock_shared(e.ex);
+        rc = nx_exthash_insert(e.ex, &ent, lsn, true);
+        nx_exthash_unlock(e.ex);
+        if (rc != NX_EXT_NEED_SPLIT)
+            break;
+        nx_exthash_lock_exclusive(e.ex);
+        REQUIRE(nx_exthash_split(e.ex, ent.hash) == 0);
+        nx_exthash_unlock(e.ex);
+    }
+    CHECK(rc == 0); /* before the fix: NX_EXT_SKIPPED */
+    nx_exthash_lock_shared(e.ex);
+    CHECK(nx_exthash_lookup(e.ex, ent.hash, &got) == 0);
+    CHECK(entry_eq(&ent, &got));
+    for (uint64_t i = 0; i < NX_BUCKET_CAPACITY; i++) {
+        nx_index_entry want;
+        make_entry(i, &want);
+        CHECK(nx_exthash_lookup(e.ex, want.hash, &got) == 0 && entry_eq(&want, &got));
+    }
+    nx_exthash_unlock(e.ex);
+    CHECK(nx_exthash_bucket_count(e.ex) >= 2);
+    env_close(&e);
+}
+
 static void test_dir_image_rejects_damage(void)
 {
     env e;
@@ -428,7 +472,7 @@ static int insert_mt(struct worker *w, const nx_index_entry *ent, uint64_t lsn)
             return 0;
         if (rc == NX_EXT_NEED_SPLIT) {
             nx_exthash_lock_exclusive(w->e->ex);
-            rc = nx_exthash_split(w->e->ex, ent->hash, lsn);
+            rc = nx_exthash_split(w->e->ex, ent->hash);
             nx_exthash_unlock(w->e->ex);
             if (rc == 0)
                 continue; /* split done (by us or another thread): retry the insert */
@@ -507,6 +551,7 @@ static const nx_test_case TESTS[] = {
     NX_CASE(test_shared_top_bits),
     NX_CASE(test_property_against_model),
     NX_CASE(test_redo_skips_applied_changes),
+    NX_CASE(test_redo_insert_across_split),
     NX_CASE(test_dir_image_rejects_damage),
     NX_CASE(test_concurrent_inserts_and_lookups),
 };

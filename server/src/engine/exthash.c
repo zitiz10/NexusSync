@@ -338,8 +338,12 @@ static int double_directory(nx_exthash *ex)
     return 0;
 }
 
-int nx_exthash_split(nx_exthash *ex, const uint8_t hash[32], uint64_t lsn)
+int nx_exthash_split(nx_exthash *ex, const uint8_t hash[32])
 {
+    /* A split is structural: it moves entries but contains no logged change.
+     * Both pages therefore keep the old page's LSN. Stamping them with the
+     * LSN of the record being applied would make redo skip that very record
+     * when it is retried after the split (the insert would be lost). */
     uint32_t old_id = page_for(ex, hash);
     nx_frame *old_fr, *new_fr;
     int rc = pin(ex, old_id, NX_PIN_READ, &old_fr);
@@ -348,18 +352,18 @@ int nx_exthash_split(nx_exthash *ex, const uint8_t hash[32], uint64_t lsn)
     nx_frame_wrlock(old_fr);
     uint8_t *op = nx_frame_data(old_fr);
     if (b_count(op) < NX_BUCKET_CAPACITY) { /* already split by someone else */
-        close_write(ex, old_fr, false, lsn);
+        close_write(ex, old_fr, false, 0);
         return 0;
     }
     uint32_t ld = b_depth(op);
     if (ld == ex->gd && double_directory(ex) != 0) {
-        close_write(ex, old_fr, false, lsn);
+        close_write(ex, old_fr, false, 0);
         return -1;
     }
     uint32_t new_id = ex->page_count;
     rc = pin(ex, new_id, NX_PIN_NEW, &new_fr);
     if (rc != 0) {
-        close_write(ex, old_fr, false, lsn);
+        close_write(ex, old_fr, false, 0);
         return rc;
     }
     nx_frame_wrlock(new_fr);
@@ -391,8 +395,9 @@ int nx_exthash_split(nx_exthash *ex, const uint8_t hash[32], uint64_t lsn)
             ex->dir[i] = new_id;
     ex->dir_dirty = true;
 
-    close_write(ex, new_fr, true, lsn);
-    close_write(ex, old_fr, true, lsn);
+    uint64_t keep_lsn = nx_page_lsn(op);
+    close_write(ex, new_fr, true, keep_lsn);
+    close_write(ex, old_fr, true, keep_lsn);
     return 0;
 }
 

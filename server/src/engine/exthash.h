@@ -83,8 +83,9 @@ int nx_exthash_set_location(nx_exthash *ex, const uint8_t hash[32], uint32_t con
 int nx_exthash_remove(nx_exthash *ex, const uint8_t hash[32], uint64_t lsn, bool redo);
 
 /* Splits the bucket that `hash` maps to (doubling the directory first if
- * needed). Caller holds the exclusive lock. */
-int nx_exthash_split(nx_exthash *ex, const uint8_t hash[32], uint64_t lsn);
+ * needed). Caller holds the exclusive lock. Not logged: both pages keep
+ * the old page LSN, so redo of the record that needed the split still runs. */
+int nx_exthash_split(nx_exthash *ex, const uint8_t hash[32]);
 
 /* Visits every entry (bucket pages in page-id order). Caller holds at
  * least the shared lock. Stops if cb returns non-zero. */
