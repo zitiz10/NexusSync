@@ -26,10 +26,10 @@ Current scope agreed with the team: M1–M7 in this run; M8–M14 in later sessi
 - [x] TS chunker + hash-wasm match the C reference on all 10 fixtures in 8 MB and odd-sized windows (vitest 16/16); mutation check fails as expected
 
 ## M3 Containers, buffer pool, index
-- [ ] Containers append, seal, read back with CRC check
-- [ ] Insert and look up 1M random hashes with splits and directory doubling
-- [ ] Clock eviction tests (pin, dirty, no-steal)
-- [ ] Property test against an in-memory map
+- [x] Containers append, seal, read back with CRC check; reopen, torn tail (sealed, new container), half-created header, corruption detection, 4-thread appends (7/7)
+- [x] Insert and look up 1M random hashes with splits and directory doubling (depth 15, 16,641 buckets, 77% fill, 372 no-steal checkpoints); reopen from dir.bin; 600 hashes sharing 16 top bits
+- [x] Clock eviction tests: exact second-chance order, pinned frames kept, no-steal refuses to write dirty pages (NX_BP_FULL), CRC detects a flipped bit (6/6)
+- [x] Property test: 200k random insert/lookup/ref/move/remove ops through a 64-frame pool match an in-memory model; 4-thread insert+lookup test; full suite clean under ASan+UBSan and TSan
 
 ## M4 Catalog, recipes, engine API
 - [ ] Slotted-page catalog (users, files)

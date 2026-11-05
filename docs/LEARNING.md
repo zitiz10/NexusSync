@@ -129,3 +129,75 @@ So the server builds on Windows and macOS without installing OpenSSL (`docs/DECI
 - Why is there a minimum block size? *(Without it, cuts could fall a few bytes apart. That creates millions of tiny blocks, each costing a 52-byte index entry and a lookup.)*
 - What happens to deduplication for a zip or PDF that was edited? *(These formats compress their content, so a small edit changes most of the compressed bytes and few blocks match. We show this honestly in the demo.)*
 - Why does PBKDF2 use 600,000 iterations? *(To make each password guess cost about a quarter-second of CPU. An attacker who steals the user table must pay that for every guess, while a real login pays it once.)*
+
+---
+
+## M3 — Containers, buffer pool, and the block index
+
+### What it does
+- **Containers** (`engine/container.c`) are where block bytes live: append-only files of about 4 MB.
+  - Each record is the block's SHA-256, its length, a CRC-32, and the data.
+  - The newest container takes appends. When the next record would not fit, the container is *sealed* (fsynced and never written again) and a new one starts.
+- **The buffer pool** (`engine/bufpool.c`) is a fixed set of 4 KB frames in RAM that caches pages of the index and catalog files. Every read or change of a page goes through it.
+- **The block index** (`engine/exthash.c`) maps a block's SHA-256 to where its bytes are (container, offset, length) and how many file references it has (refcount). It is built with *extendible hashing* over 4 KB bucket pages, each holding up to 78 entries.
+
+### Extendible hashing in one picture
+```
+directory (global depth 2)        bucket pages
+  00 ───────────────────────────► page 0 (local depth 1): hashes starting 0…
+  01 ──────────────────────────┘
+  10 ───────────────────────────► page 1 (local depth 2): hashes starting 10…
+  11 ───────────────────────────► page 2 (local depth 2): hashes starting 11…
+```
+- **Lookup:** take the top *global depth* bits of the hash, read that directory slot (in memory), and read one bucket page. One page read, however big the index is.
+- **Insert into a full bucket:**
+  - If its *local depth* is below the global depth, several slots share the page. Split it into two pages by the next bit and repoint half the slots. The directory does not grow.
+  - If local depth equals global depth, *double* the directory first (each slot is copied twice), then split.
+- **Buckets never merge.** This keeps the code simple; deleted entries just leave room.
+
+**Measured** (ASan build): 1M random hashes → global depth 15, 16,641 buckets, 77% average fill, every entry found again, also after reopening from disk. 600 hashes that share their top 16 bits force splits down to depth 20 and are all still found.
+
+### The buffer pool
+- **Pin and unpin.** Code *pins* a page while using it, so the page cannot be evicted, and unpins it when done.
+- **Latch.** A per-frame read/write lock protects the bytes while they are read or changed. Pinning and latching are separate: many threads can have a page pinned, but only one can latch it for writing.
+- **Clock replacement.** A "hand" sweeps the frames looking for one to reuse.
+  - A frame used since the hand last passed has its reference bit set. The hand clears the bit and moves on (a *second chance*).
+  - A frame with the bit clear is evicted.
+
+  This approximates LRU without keeping a sorted list. Our test checks the exact eviction order.
+- **No-steal.** A dirty (changed) page is never written to disk by eviction, only by a checkpoint. So the files on disk always show the state as of the last checkpoint, and recovery never has to undo anything. When every frame is dirty or pinned, the pool says `NX_BP_FULL` and the caller runs a checkpoint.
+- **Checksums.** Every page carries a CRC-32, set when it is written and checked when it is read. A flipped bit on disk is reported, not used.
+
+### Page LSNs (needed for recovery in M5)
+Every page records the LSN (log sequence number) of the last logged change applied to it. During recovery we replay the write-ahead log. A change is skipped if the page's LSN shows it is already there. This makes replay safe to repeat, and lets a checkpoint happen partway through applying a large transaction (`docs/DECISIONS.md` D-013).
+
+### Crash handling in containers
+- A crash in the middle of an append leaves a partial record at the end of the newest container. On restart we detect it: the length runs past the end of the file, or the CRC is wrong on the last record.
+- We seal that container as it is and continue in a new one, so valid records never sit after garbage.
+- Nothing that was committed can be lost this way, because a block counts as stored only after the container is fsynced and the WAL says so (M5).
+
+### OS and DBMS concepts
+- **Paging and page replacement (OS):** the buffer pool *is* a page cache with Clock replacement, the same algorithm family operating systems use for virtual memory.
+- **Indexing (DBMS):** extendible hashing is a dynamic hash index. Lookups take O(1) page reads, and it grows incrementally with no full rehash.
+- **Buffer management policies (DBMS):** no-steal / no-force, pin counts, dirty pages.
+- **Append-only storage (OS):** sequential writes are fast, and a torn write can only damage the end of a file.
+- **Concurrency (OS):**
+  - The directory lock is shared for normal operations and exclusive for a split.
+  - Frame latches protect the bytes of one page.
+  - Small *leaf* locks (pool page table, handle cache) are never held while acquiring another lock, so they cannot be part of a deadlock cycle.
+
+### Files to read
+`engine/exthash.h` (layout and rules), then `exthash.c` (`nx_exthash_split` is the heart); `engine/bufpool.c` (`find_victim` is Clock); `engine/container.c` (`nx_containers_open` handles crash leftovers). Tests: `tests/unit/test_exthash.c`, `test_bufpool.c`, `test_container.c`.
+
+### Likely examiner questions
+
+**Q1. "Why extendible hashing and not a B+ tree?"**
+We only ever look blocks up by exact hash, never by range, so we do not need a B+ tree's ordering. Extendible hashing gives one page read per lookup and grows smoothly: a split touches one bucket and maybe doubles the small in-memory directory. A B+ tree needs about log(n) page reads and more complex splits. The cost is that range scans are impossible, which we never need. (A B+ tree over *file names* is listed as a stretch goal.)
+
+**Q2. "What happens when the buffer pool is full of dirty pages?"**
+No-steal forbids writing them out early, so `pin` returns `NX_BP_FULL` and the caller runs a checkpoint: write all dirty pages safely, then mark them clean. We also checkpoint early when more than half the frames are dirty. The test with a 64-frame pool ran 1,708 checkpoints during 200,000 operations, and the final state matched an in-memory model exactly.
+
+### More questions to practise
+- What is the difference between a pin and a latch? *(A pin says "do not evict this frame". A latch says "do not touch these bytes while I am reading or writing them".)*
+- Why does doubling the directory not move any entries? *(Each old slot becomes two slots pointing at the same page. Pages split only when they are full.)*
+- Why is the new page's LSN copied from the old page during a split? *(The new page holds entries copied from the old page, so it already contains every change the old page had. Redo must not apply those changes again.)*

@@ -141,13 +141,13 @@ Storage: the 33 MB of fixture data is not committed. `scripts/make_fixtures.py` 
 ## 7. Storage engine
 
 ### 7.1 Containers
-One active container receives appends under a mutex. Each append writes the record, and blocks are made durable in batches: the uploader collects up to 64 accepted blocks or 50 ms, calls `fsync` on the container once, then logs one `CHUNK_ADD` transaction for the batch. On startup the active container's append offset is its file length; trailing bytes from an interrupted write are orphan bytes, reclaimed by compaction.
+One active container receives appends under a mutex. The active container is the highest-numbered container file; a damaged tail (interrupted append) is never appended after: that container is sealed as is and a new one starts (DECISIONS D-014). Each append writes the record, and blocks are made durable in batches: the uploader collects up to 64 accepted blocks or 50 ms, calls `fsync` on the container once, then logs one `CHUNK_ADD` transaction for the batch. On startup the active container's append offset is its file length; trailing bytes from an interrupted write are orphan bytes, reclaimed by compaction.
 
 ### 7.2 Block index: extendible hashing
 Directory of `2^global_depth` page ids, indexed by the top `global_depth` bits of the block hash. Lookup: one directory read (in memory) and one bucket page read (through the buffer pool). Insert into a full bucket: if `local_depth < global_depth`, split the bucket into two pages by the next bit and repoint directory slots; otherwise double the directory first. Buckets never merge (documented choice). Start with `global_depth = 4`.
 
 ### 7.3 Buffer pool
-`buffer_pool_pages` frames of 4096 bytes, Clock replacement, per-frame latch and pin count. **No-steal:** a dirty frame is never written outside a checkpoint. When dirty frames exceed 50% of the pool, wake the checkpointer; if no frame can be evicted, the requesting thread waits for the checkpoint to finish. Track hits and misses for the Engine screen.
+`buffer_pool_pages` frames of 4096 bytes, Clock replacement, per-frame latch and pin count. **No-steal:** a dirty frame is never written outside a checkpoint. When dirty frames exceed 50% of the pool, wake the checkpointer; if no frame can be evicted, the requesting thread waits for the checkpoint to finish. Track hits and misses for the Engine screen. Every page (index buckets, catalog pages) begins with `u64 page_lsn` and has its CRC at bytes 12–15, so the pool checksums all pages the same way and redo can skip changes a page already contains (DECISIONS D-013).
 
 ### 7.4 Catalog and recipes
 Users and files live in slotted-page tables through the same buffer pool, so they share the checkpoint and recovery path. On startup, build in-memory indexes: users by id and username; files by id, by owner, and by (owner, name) for versions. Recipes are append-only; deleted files leave dead recipe bytes, reclaimed by a stretch-goal compaction.
@@ -205,6 +205,10 @@ Locks, always acquired in this order and released in reverse:
 5. Buffer pool frame latches (short, never held across I/O except the page read itself)
 6. Active container mutex
 7. WAL mutex
+
+Leaf locks (taken last, never while acquiring another lock, held only for short in-memory work): the buffer pool's page-table mutex (taken inside pin/unpin/mark-dirty while a frame latch may be held; it may do the page read on a miss), the container read-handle cache mutex, and the log output mutex.
+
+Index operations never wait for a split while holding a stripe: an insert into a full bucket returns `NX_EXT_NEED_SPLIT`, the caller releases its stripes and the shared directory lock, takes the directory lock exclusively, splits, and retries. A full buffer pool returns `NX_BP_FULL` instead of blocking; the caller releases its locks and runs a checkpoint (DECISIONS D-013).
 
 Rules: never hold a stripe while waiting on network I/O; never call into the HTTP layer while holding engine locks; the WebSocket broadcaster receives events through a bounded queue. Two uploads storing the same new block: the second to take the stripe finds the entry and discards its copy (counts as deduplicated). Document any new lock here before adding it.
 

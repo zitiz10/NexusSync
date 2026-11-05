@@ -120,3 +120,43 @@ SPEC §6.4 needs 10 fixture files, about 33 MB in total. Committing them would b
 - `hash-wasm` (runtime, already allowed by CLAUDE.md): SHA-256 in the browser over plain HTTP, where `crypto.subtle` is unavailable.
 - `@types/node` (dev only): types for `node:fs` in the vitest parity test, which reads fixture files. It ships nothing to the browser.
 - npm 11 skipped the install script of `fsevents`, an optional macOS file watcher. We left it unapproved: Vite falls back to polling and builds normally.
+
+## D-013 Page LSNs and "pool full → checkpoint" (M3, used in M5)
+
+**Problem.**
+- The spec's buffer pool is no-steal: dirty pages reach disk only at a checkpoint.
+- One file commit can touch more index pages than the pool holds. A 300 MB CSV is about 64k blocks, so its commit applies about 64k `REF_INC`s spread over every bucket page. With the default 4,096 frames, the pool fills before the commit has been applied.
+- Blocking forever, or raising the pool size until it fits, would make the server fail exactly when the store grows.
+
+**Chosen.** Two classic DBMS techniques:
+1. **Page LSN (as in ARIES).**
+   - Every page stores the LSN of the last WAL record applied to it.
+   - During redo, a change is skipped when the page's LSN is already at or beyond the record's LSN (`NX_EXT_SKIPPED`). That makes replaying a record idempotent.
+   - A split copies the old page's LSN to the new page, because the new page holds state copied from the old one.
+2. **The pool never blocks.** When no clean, unpinned frame is free, `pin` returns `NX_BP_FULL`. The caller runs a checkpoint and retries.
+
+**Consequence for M5.**
+- A checkpoint may run while a committed transaction is only partly applied to pages. In that case the checkpoint LSN must be set to just before that transaction's `BEGIN`, so recovery replays it, and the page LSNs make the replay skip whatever was already applied.
+- This also requires committed transactions to be applied to pages in LSN order: one applier at a time (the commit pipeline in M5). Otherwise a page could show a later LSN while missing an earlier change.
+
+**Alternatives rejected.**
+- *Steal with undo logging.* Needs undo records and compensation: much more machinery.
+- *A pool that always fits the whole index.* Memory grows with stored data until the server cannot start.
+
+**Tested in M3.**
+- 1M inserts through a 4,096-frame pool (372 checkpoints).
+- 200k random operations through a 64-frame pool (1,708 checkpoints), matching an in-memory model.
+- The redo skip rule, in a dedicated test.
+
+## D-014 Which container is active, and torn container tails (M3)
+
+**Active container.** The active container is the one with the highest id among the files on disk, not a value read from the superblock. A new container is created (and its directory entry fsynced) before any record is written to it, so the highest id on disk is always the newest container. Restart after a crash therefore never depends on a superblock written before that crash.
+
+**Torn tail.** A crash during an append can leave a partial record at the end of the active container. Appending after it would put valid records behind unparsable bytes, so a sequential scan (`--rebuild-index`, compaction) could not find them. Instead, on startup:
+- the damaged container is sealed as it is, with no truncation, so we never delete bytes we cannot classify;
+- appends continue in a new container;
+- the damaged bytes are orphan bytes, reported by the scan and reclaimed by compaction.
+
+**Half-created container.** If the highest container has no valid header, it was created but its header never became durable. No committed record can be inside it (the record fsync would also have made the header durable), so it is rewritten.
+
+**Read handles.** Reads go through a cache of 64 open handles with reference counts. macOS allows only 256 open files per process by default, and a large store has thousands of containers.
