@@ -7,6 +7,8 @@ Platforms: macOS (verified locally on Apple Silicon), Linux and Windows (verifie
 
 Current scope agreed with the team: M1–M7 in this run; M8–M14 in later sessions.
 
+**Status (2026-11-05): M1–M3 done and committed. The first session stopped here at the team's request. Next session: start at M4.** See "Handoff notes for M4" below.
+
 ## M1 Scaffold
 - [x] Repo layout per `CLAUDE.md` (plus `server/src/platform/`); module folders fill in from M2
 - [x] Makefile targets `all`, `debug`, `asan`, `tsan`, `test`: all run and pass on macOS (Apple clang 21, arm64), also with `WERROR=1`. Linux and Windows: see CI item
@@ -57,6 +59,43 @@ Current scope agreed with the team: M1–M7 in this run; M8–M14 in later sessi
 
 ## M8–M14
 Not started (later sessions). See SPEC §14.
+
+## Handoff notes for M4 (read before starting)
+
+**State of the repo.**
+- `main` is clean at the M3 commit.
+- `python3 scripts/check.py` passes on macOS: 45 C tests under ASan+UBSan, plus web parity tests. `make -C server tsan` passes too (about 2 min).
+- No GitHub remote yet. The team will create the repo later and push all history at once, so do not push anywhere.
+
+**Unfinished M4 draft (not committed, not tested).** It is saved in a git stash:
+`git stash list` shows `M4 draft (untested): catalog.c/.h slotted pages + util/hmap.c/.h`. Restore it with `git stash pop`, or drop it and start fresh.
+- It holds `server/src/util/hmap.[ch]`: open-addressing maps for 32-byte and u64 keys.
+- It holds `server/src/engine/catalog.[ch]`: users and files tables in slotted pages through the buffer pool, in-memory indexes rebuilt at startup, idempotent "logical redo" apply functions, and user records zero-padded to a fixed size so updates are always in place.
+- It was never compiled. Review it before use.
+
+**Design decided in session 1 for M4/M5.** Not yet written up in DECISIONS; record it there when implemented.
+1. **Every change is a WAL record applied by one redo-capable apply function.**
+   - M4 can use a stub log that only hands out LSNs; M5 swaps in the real WAL.
+   - Catalog changes redo *logically by key*: adding a file id that exists, or deleting one that is gone, is a no-op.
+   - Index `REF_INC`/`REF_DEC` redo *by page LSN* (`redo=true` in the exthash API, already implemented and tested).
+   - `CHUNK_ADD`, `BLOCK_FREE` and `BLOCK_MOVE` are idempotent by key.
+2. **One applier at a time.** A single transaction mutex (the "checkpoint lock", taken as a mutex instead of the spec's rwlock) covers WAL append, fsync, and applying to pages. The checkpoint takes the same mutex. This keeps applies in LSN order, which page-LSN redo requires (D-013).
+   - Index stripes (SPEC §9 #4) become unnecessary under this mutex. Plan: document this in SPEC §9 and DECISIONS rather than implementing stripes.
+   - Two uploads storing the same new block: the second `CHUNK_ADD` gets `NX_EXT_EXISTS`. Its container copy becomes orphan bytes (reclaimed by compaction) and the block counts as deduplicated.
+3. **Pool full during apply.**
+   - The applier releases its catalog and directory locks (keeping only the transaction mutex), checkpoints with `checkpoint_lsn = BEGIN lsn − 1` of the transaction in progress, then retries the record.
+   - Readers that get `NX_BP_FULL` release all locks, take the transaction mutex, checkpoint, and retry.
+   - On `NX_EXT_NEED_SPLIT`: take the directory lock exclusively, split, retry.
+4. **Next-id counters after recovery:** `max(superblock value, max id in catalog + 1, max id seen in replayed records + 1)`.
+5. **The directory image must be written through the doublewrite file together with the dirty pages.** Use `nx_exthash_dir_image()`: it is padded to 4 KB pages for exactly this. Never write `dir.bin` with a separate rename, because then pages and directory could come from different checkpoints after a crash.
+6. **Recipes** (`recipes.dat`): append and fsync under their own leaf mutex before the commit record. A torn tail is harmless, because recipes are only reached through the offset in a committed file record. Reads check magic, file id, count, and CRC.
+7. **Stats counters:**
+   - logical = sum of file sizes
+   - physical = sum of index entry lengths
+   - writes skipped = logical − physical
+   - network saved = sum(size − bytes_sent)
+
+**M4 acceptance (SPEC §14).** An in-process put/get/delete round trip of 200 random files, including duplicates and edited copies; `engine_fsck` checks I1–I3 (SPEC §1, §10).
 
 ## Open problems
 - **Windows and Linux not yet verified.** `plat_win32.c` and the Linux paths of `plat_posix.c` (getrandom, MSG_NOSIGNAL) have not been compiled. They will be once the repo is pushed to GitHub and CI runs, or when a teammate runs `make -C server test` on a Windows laptop (MSYS2) or Linux.
