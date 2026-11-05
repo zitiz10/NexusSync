@@ -25,6 +25,7 @@ enum nx_app_state { NX_APP_RECOVERING = 0, NX_APP_READY = 1, NX_APP_STOPPING = 2
 #define NX_PBKDF2_ITERS 600000u
 
 typedef struct nx_auth nx_auth;
+typedef struct nx_uploads nx_uploads;
 
 typedef struct nx_app {
     nx_config cfg;
@@ -32,6 +33,7 @@ typedef struct nx_app {
     _Atomic int state;
     nx_hub *hub;
     nx_auth *auth;
+    nx_uploads *uploads;
     uint32_t pbkdf2_iters; /* SPEC §13: 600,000. Tests lower it in code. */
     uint64_t started_ms;
 

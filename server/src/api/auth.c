@@ -4,6 +4,8 @@
 #include "cJSON.h"
 #include "crypto/kdf.h"
 #include "crypto/sha256.h"
+#include "util/bytes.h"
+#include "util/crc32.h"
 #include "util/hmap.h"
 #include "util/log.h"
 
@@ -37,18 +39,121 @@ typedef struct {
 struct nx_auth {
     pthread_mutex_t mu;
     uint32_t ttl_s;
+    char dir[1024];   /* "" = memory only */
+    char path[1100];  /* <dir>/sessions */
     session *s;
     size_t cap, count;
     nx_hmap32 by_hash; /* token hash -> index in s */
     rl_slot *rl;
 };
 
-int nx_auth_create(uint32_t session_ttl_s, nx_auth **out)
+/* data/sessions: "NXSS", u16 version 1, u16 0, u32 count, then count x
+ * (token_hash[32], u32 user_id, u64 expires_ms), then u32 crc32 over all
+ * preceding bytes. */
+#define SESS_ENTRY 44u
+
+/* Caller holds mu. Rewrites the file atomically: temp file, fsync,
+ * rename, fsync the directory. */
+static int persist_locked(nx_auth *a)
+{
+    if (!a->dir[0])
+        return 0;
+    size_t len = 12 + a->count * SESS_ENTRY + 4, o = 12;
+    uint8_t *buf = malloc(len);
+    if (!buf)
+        return -1;
+    memcpy(buf, "NXSS", 4);
+    nx_put_u16(buf + 4, 1);
+    nx_put_u16(buf + 6, 0);
+    nx_put_u32(buf + 8, (uint32_t)a->count);
+    for (size_t i = 0; i < a->cap; i++)
+        if (a->s[i].used) {
+            memcpy(buf + o, a->s[i].token_hash, 32);
+            nx_put_u32(buf + o + 32, a->s[i].user_id);
+            nx_put_u64(buf + o + 36, a->s[i].expires_ms);
+            o += SESS_ENTRY;
+        }
+    nx_put_u32(buf + o, nx_crc32(0, buf, o));
+    char tmp[1110];
+    snprintf(tmp, sizeof tmp, "%s.tmp", a->path);
+    plat_file *f;
+    int rc = plat_file_open(tmp, PLAT_O_WRITE | PLAT_O_CREATE | PLAT_O_TRUNC | PLAT_O_PRIVATE, &f);
+    if (rc == 0) {
+        rc = plat_pwrite_all(f, buf, len, 0);
+        if (rc == 0)
+            rc = plat_fsync_file(f);
+        if (plat_file_close(f) != 0)
+            rc = -1;
+    }
+    if (rc == 0)
+        rc = plat_rename_replace(tmp, a->path);
+    if (rc == 0)
+        rc = plat_fsync_dir(a->dir);
+    free(buf);
+    if (rc != 0)
+        LOG_ERROR("auth", "cannot save sessions err=%s", plat_last_error());
+    return rc;
+}
+
+static void load_sessions(nx_auth *a)
+{
+    plat_file *f;
+    if (plat_file_open(a->path, PLAT_O_READ, &f) != 0)
+        return; /* first start */
+    uint64_t size = 0;
+    uint8_t *buf = NULL;
+    bool ok = plat_file_size(f, &size) == 0 && size >= 16 && size <= (64u << 20) &&
+              (buf = malloc((size_t)size)) != NULL &&
+              plat_pread(f, buf, (size_t)size, 0) == (int64_t)size;
+    plat_file_close(f);
+    uint32_t n = ok ? nx_get_u32(buf + 8) : 0;
+    ok = ok && memcmp(buf, "NXSS", 4) == 0 && nx_get_u16(buf + 4) == 1 &&
+         size == 12 + (uint64_t)n * SESS_ENTRY + 4 &&
+         nx_get_u32(buf + size - 4) == nx_crc32(0, buf, (size_t)size - 4);
+    if (!ok) {
+        LOG_WARN("auth", "sessions file unreadable; everyone signs in again");
+        free(buf);
+        return;
+    }
+    uint64_t now = plat_now_unix_ms();
+    for (uint32_t i = 0; i < n; i++) {
+        const uint8_t *e = buf + 12 + (size_t)i * SESS_ENTRY;
+        uint64_t exp = nx_get_u64(e + 36);
+        if (exp <= now)
+            continue;
+        if (a->count == a->cap) {
+            session *ns = realloc(a->s, a->cap * 2 * sizeof *ns);
+            if (!ns)
+                break;
+            memset(ns + a->cap, 0, a->cap * sizeof *ns);
+            a->s = ns;
+            a->cap *= 2;
+        }
+        size_t slot = a->count;
+        uint64_t *v = nx_hmap32_upsert(&a->by_hash, e, NULL);
+        if (!v)
+            break;
+        *v = slot;
+        memcpy(a->s[slot].token_hash, e, 32);
+        a->s[slot].user_id = nx_get_u32(e + 32);
+        a->s[slot].expires_ms = exp;
+        a->s[slot].used = true;
+        a->count++;
+    }
+    free(buf);
+    LOG_INFO("auth", "sessions restored count=%zu", a->count);
+}
+
+int nx_auth_create(uint32_t session_ttl_s, const char *data_dir, nx_auth **out)
 {
     nx_auth *a = calloc(1, sizeof *a);
     if (!a)
         return -1;
     a->ttl_s = session_ttl_s;
+    if (data_dir) {
+        snprintf(a->dir, sizeof a->dir, "%s", data_dir);
+        snprintf(a->path, sizeof a->path, "%s/sessions", data_dir);
+    }
     a->cap = 64;
     a->s = calloc(a->cap, sizeof *a->s);
     a->rl = calloc(RL_SLOTS, sizeof *a->rl);
@@ -59,6 +164,8 @@ int nx_auth_create(uint32_t session_ttl_s, nx_auth **out)
         return -1;
     }
     pthread_mutex_init(&a->mu, NULL);
+    if (a->dir[0])
+        load_sessions(a);
     *out = a;
     return 0;
 }
@@ -136,6 +243,12 @@ int nx_session_create(nx_auth *a, uint32_t user_id, char token_hex[65])
         a->s[slot] = ns;
         a->count++;
         rc = 0;
+        /* Durable before the cookie is handed out: a crash right after the
+         * login answer must not sign the user out. */
+        if (persist_locked(a) != 0) {
+            remove_session(a, slot);
+            rc = -1;
+        }
     }
     pthread_mutex_unlock(&a->mu);
     if (rc == 0)
@@ -171,17 +284,24 @@ void nx_session_delete(nx_auth *a, const char *token_hex)
         return;
     pthread_mutex_lock(&a->mu);
     uint64_t *v = nx_hmap32_get(&a->by_hash, h);
-    if (v)
+    if (v) {
         remove_session(a, (size_t)*v);
+        persist_locked(a); /* logout must stay logged out after a restart */
+    }
     pthread_mutex_unlock(&a->mu);
 }
 
 void nx_session_delete_user(nx_auth *a, uint32_t user_id)
 {
     pthread_mutex_lock(&a->mu);
+    bool any = false;
     for (size_t i = 0; i < a->cap; i++)
-        if (a->s[i].used && a->s[i].user_id == user_id)
+        if (a->s[i].used && a->s[i].user_id == user_id) {
             remove_session(a, i);
+            any = true;
+        }
+    if (any)
+        persist_locked(a);
     pthread_mutex_unlock(&a->mu);
 }
 

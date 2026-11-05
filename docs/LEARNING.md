@@ -391,3 +391,65 @@ A WebSocket stays open as long as the tab, so 8 tabs would occupy all 8 workers 
 - Why does an unknown username still run PBKDF2? *(So the response time does not reveal whether the username exists.)*
 - Why does the server keep only a hash of each session token? *(A memory dump or a log line then never contains a token that could be replayed.)*
 
+## M7 — Uploads, downloads, the CLI, and concurrency
+
+### What it does
+- **`api/uploads.c`** implements the upload protocol. Only the blocks the server lacks cross the network.
+- **`api/files.c`** lists, shows, downloads, shares, and deletes files, with the access rules.
+- **`cli/`** is the `nexus` command-line client: `login`, `put`, `get`, `ls`, `rm`. It chunks files with the *same C code* as the server.
+- **`scripts/concurrency_test.py`** and **`scripts/crash_test.py`** test the real programs: real processes, real sockets, real `kill -9`.
+
+### The upload protocol, step by step
+1. **Declare** (`POST /api/uploads`): name, size, whole-file SHA-256, chunker, number of blocks. The server checks that the numbers fit together (for example, a 200 KB file cannot have 3 CDC blocks, because no block is larger than 16 KB).
+2. **Manifest** (`.../manifest?page=N`): the fingerprints and lengths of up to 8,192 blocks per page. The server looks each one up in the block index and answers `need: [...]`, the blocks it does not have. *This is where deduplication saves the network:* an identical file gets `need: []`.
+3. **Chunks** (`.../chunks`): only the needed blocks, as `(index, length, bytes)` records. The server re-hashes every block and compares it with the manifest; mismatches are rejected one by one, with a reason.
+4. **Commit**: the engine writes the recipe and commits the file (M4/M5). If a block is still missing, the answer is 409 with the indices, the client sends them, and commits again.
+
+**Resume after a crash is free.** Blocks that reached the server before the crash are in the index, so a new upload of the same file is told it needs only the rest. The test sees a retry need 27 of 53 blocks.
+
+### Who may see what
+- A student reads their own files and files others shared; the admin reads everything.
+- Only the owner or the admin may share or delete.
+- A file you may not read answers **404, not 403**, so trying ids reveals nothing about other students' files.
+- Upload sessions belong to their creator: someone else's upload id also answers 404.
+
+### Concurrency: what happens when 8 students upload at once?
+- Each worker thread serves one request. Hashing and container appends run in parallel; only the short commit step takes the transaction mutex (D-016).
+- Two students uploading the same new block both send it. Both copies are appended, the second `CHUNK_ADD` finds the entry and does nothing, and the extra bytes are reclaimed by compaction (M12).
+- `concurrency_test.py` runs 8 CLI processes at the same moment: 56 files (72 MB), every download verified by SHA-256, and `--fsck` clean afterwards.
+- ThreadSanitizer found one real race while testing this milestone. Index statistics were read without a lock while a split changed them (D-033).
+
+### Crash testing with real processes
+`crash_test.py 50` runs random uploads and deletes from several CLI processes and kills the server at a random moment (0.1–3 s) in each of 50 rounds. After each kill:
+- the restarted server must hold *exactly* the committed files, each with the right SHA-256;
+- an upload that was in flight must be either completely there or not at all (atomicity);
+- after a clean stop, `--fsck` must pass.
+
+Result: 50/50 rounds clean, about 4,700 operations, more than 100 uploads interrupted mid-flight.
+
+### Sessions now survive a crash (D-030)
+The demo kills the server while students are signed in, and then they simply continue. So session hashes are saved to `data/sessions` (atomically, fsynced) before a login answers. Only hashes are stored, so the file is useless to a thief.
+
+### OS and DBMS concepts
+- **Atomicity and durability (DBMS):** an upload is all or nothing, even under `kill -9`.
+- **Producer/consumer and thread pools (OS):** parallel uploads, with one short critical section.
+- **Content addressing:** why deduplication and resume need no extra bookkeeping.
+- **Defensive protocol design:** bounds on every length, index, and count; per-item validation.
+- **Testing concurrent systems:** model-based checking, real-process fault injection, ThreadSanitizer.
+
+### Files to read
+`api/uploads.c` (`nx_h_upload_manifest`, `nx_h_upload_chunks`, `nx_h_upload_commit`), `api/files.c` (`nx_h_files_list`, `nx_h_file_content`), `cli/main.c` (`cmd_put`), `scripts/crash_test.py` (`verify`). Tests: `tests/integration/test_uploads.c`.
+
+### Likely examiner questions
+
+**Q1. "A student's laptop sends a block whose bytes do not match its fingerprint. What happens?"**
+The server hashes every received block itself and compares the result with the fingerprint from the manifest. A mismatch is rejected (`hash_mismatch`) and never stored. If a client lied about the whole file, commit re-reads the file from storage, hashes it, and answers 422 (`file_hash_mismatch`). The server never trusts a client-supplied hash, length, or index.
+
+**Q2. "The server is killed in the middle of an upload. What does the student see, and what is lost?"**
+The upload fails. Nothing half-committed exists, because commit is atomic (WAL). Blocks that already reached the server stay in the index (or become orphan bytes if their `CHUNK_ADD` was not logged), and the student's session survives the restart. When they upload again, the manifest step tells them only the remaining blocks are needed. The crash test does this 50 times with real `kill -9`s.
+
+### More questions to practise
+- Why does the manifest come in pages of 8,192? *(One page is 288 KB, small enough for a single request; a 4 GB file needs about 100 pages, each answered with its own `need` list.)*
+- Why answer 404 instead of 403 for another student's file? *(403 would confirm that the id exists; 404 reveals nothing.)*
+- Why does `nexus get` write to a `.part` file first? *(If the download is cut short or the SHA-256 does not match, the half file is deleted and never mistaken for the real one.)*
+

@@ -2,6 +2,8 @@
 #include "net/router.h"
 
 #include "api/auth.h"
+#include "api/files.h"
+#include "api/uploads.h"
 #include "nexus_version.h"
 #include "net/static.h"
 #include "util/log.h"
@@ -178,6 +180,46 @@ static void h_ws(nx_ctx *c)
 
 /* ===== table ======================================================================== */
 
+/* Matches path against a pattern whose segments may be {id} or {uid}.
+ * Parameters are validated here, so handlers get only well-formed ids. */
+static bool match(const char *pattern, const char *path, nx_ctx *c)
+{
+    const char *p = pattern, *s = path;
+    while (*p && *s) {
+        if (strncmp(p, "{id}", 4) == 0) {
+            uint64_t v = 0;
+            size_t n = 0;
+            for (; s[n] >= '0' && s[n] <= '9'; n++) {
+                if (n >= 19 || (n == 0 && s[n] == '0'))
+                    return false; /* too long, or a leading zero */
+                v = v * 10 + (uint64_t)(s[n] - '0');
+            }
+            if (n == 0 || v == 0)
+                return false;
+            c->id = v;
+            p += 4;
+            s += n;
+        } else if (strncmp(p, "{uid}", 5) == 0) {
+            size_t n = 0;
+            for (; (s[n] >= '0' && s[n] <= '9') || (s[n] >= 'a' && s[n] <= 'f'); n++)
+                if (n >= 32)
+                    return false;
+            if (n != 32)
+                return false;
+            memcpy(c->uid, s, 32);
+            c->uid[32] = '\0';
+            p += 5;
+            s += 32;
+        } else if (*p == *s) {
+            p++;
+            s++;
+        } else {
+            return false;
+        }
+    }
+    return *p == '\0' && *s == '\0';
+}
+
 enum { R_AUTH = 1, R_ADMIN = 2, R_ANY_STATE = 4 };
 
 typedef struct {
@@ -196,6 +238,16 @@ static const route ROUTES[] = {
     {"GET", "/api/admin/join-code", nx_h_admin_join_code, R_ADMIN},
     {"POST", "/api/admin/join-code/rotate", nx_h_admin_join_code_rotate, R_ADMIN},
     {"POST", "/api/admin/checkpoint", h_admin_checkpoint, R_ADMIN},
+    {"GET", "/api/files", nx_h_files_list, R_AUTH},
+    {"GET", "/api/files/{id}", nx_h_file_get, R_AUTH},
+    {"PATCH", "/api/files/{id}", nx_h_file_patch, R_AUTH},
+    {"DELETE", "/api/files/{id}", nx_h_file_delete, R_AUTH},
+    {"GET", "/api/files/{id}/content", nx_h_file_content, R_AUTH},
+    {"POST", "/api/uploads", nx_h_upload_create, R_AUTH},
+    {"POST", "/api/uploads/{uid}/manifest", nx_h_upload_manifest, R_AUTH},
+    {"POST", "/api/uploads/{uid}/chunks", nx_h_upload_chunks, R_AUTH},
+    {"POST", "/api/uploads/{uid}/commit", nx_h_upload_commit, R_AUTH},
+    {"DELETE", "/api/uploads/{uid}", nx_h_upload_cancel, R_AUTH},
 };
 
 size_t nx_route_body_limit(const char *method, const char *path)
@@ -237,7 +289,7 @@ void nx_route(nx_ctx *c)
     bool path_known = false;
     bool head = strcmp(c->req->method, "HEAD") == 0;
     for (size_t i = 0; i < sizeof ROUTES / sizeof ROUTES[0]; i++) {
-        if (strcmp(ROUTES[i].path, c->path) != 0)
+        if (!match(ROUTES[i].path, c->path, c))
             continue;
         path_known = true;
         if (strcmp(ROUTES[i].method, c->req->method) == 0 ||

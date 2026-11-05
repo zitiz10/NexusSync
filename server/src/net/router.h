@@ -30,6 +30,9 @@ typedef struct {
     size_t body_len;
     bool keep_alive;
     bool head_only;
+    /* Path parameters of the matched route. */
+    uint64_t id;  /* {id}: decimal, 1..2^64-2 */
+    char uid[33]; /* {uid}: 32 lower-case hex characters */
     /* Set by the auth gate. */
     bool authed;
     nx_user user;

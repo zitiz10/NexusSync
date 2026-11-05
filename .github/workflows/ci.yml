@@ -27,6 +27,10 @@ jobs:
       - name: Tests under TSan
         if: runner.os == 'Linux'
         run: make -C server tsan
+      - name: 8 concurrent CLI clients, then fsck (M7)
+        run: python3 scripts/concurrency_test.py
+      - name: Crash test, 10 hard kills (SPEC §15)
+        run: python3 scripts/crash_test.py 10
 
   server-windows:
     runs-on: windows-latest
@@ -46,6 +50,10 @@ jobs:
         run: ./server/build/nexusd.exe --version
       - name: Tests (no sanitizers on MinGW)
         run: make -C server test CC=gcc
+      - name: 8 concurrent CLI clients, then fsck (M7)
+        run: python scripts/concurrency_test.py
+      - name: Crash test, 10 hard kills (SPEC §15)
+        run: python scripts/crash_test.py 10
       - name: Upload nexusd.exe
         uses: actions/upload-artifact@v4
         with:

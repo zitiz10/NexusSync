@@ -643,8 +643,9 @@ bool nx_catalog_latest_version(nx_catalog *c, uint32_t owner, const char *name, 
     const nx_file *best = NULL;
     for (size_t i = 0; i < c->fn; i++) {
         const nx_file *f = &c->fv[i].f;
-        if (f->owner_id == owner && strcmp(f->name, name) == 0 &&
-            (!best || f->version > best->version))
+        /* The newest file with this name (highest id): after a "new file"
+         * upload reuses a name, later uploads continue that newest chain. */
+        if (f->owner_id == owner && strcmp(f->name, name) == 0 && (!best || f->id > best->id))
             best = f;
     }
     if (best && out)

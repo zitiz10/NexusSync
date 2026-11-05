@@ -1186,7 +1186,16 @@ int nx_engine_commit_file(nx_engine *e, const nx_commit_meta *m, const nx_chunk_
         f.owner_id = m->owner_id;
         memcpy(f.name, m->name, name_len + 1);
         nx_file prev;
-        if (nx_catalog_latest_version(e->cat, m->owner_id, m->name, &prev)) {
+        bool has_prev = false;
+        if (m->version_of == 0)
+            has_prev = nx_catalog_latest_version(e->cat, m->owner_id, m->name, &prev);
+        else if (m->version_of != NX_VERSION_NONE) {
+            has_prev = nx_catalog_file_by_id(e->cat, m->version_of, &prev) &&
+                       prev.owner_id == m->owner_id;
+            if (!has_prev)
+                rc = NX_ENGINE_NOT_FOUND;
+        }
+        if (has_prev) {
             f.version = prev.version + 1;
             f.prev_version_id = prev.id;
         } else {

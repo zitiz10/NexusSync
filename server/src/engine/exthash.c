@@ -453,14 +453,25 @@ bool nx_exthash_dir_dirty(nx_exthash *ex, bool clear)
     return d;
 }
 
+/* gd and page_count change during a split (exclusive lock), and stats are
+ * read from other threads (the server's background thread), so read them
+ * under the shared lock. Callers must not already hold the lock. */
 void nx_exthash_get_stats(nx_exthash *ex, nx_exthash_stats *out)
 {
+    pthread_rwlock_rdlock(&ex->dir_lock);
     out->entries = atomic_load(&ex->entries);
     out->global_depth = ex->gd;
     out->buckets = ex->page_count;
+    pthread_rwlock_unlock(&ex->dir_lock);
     out->avg_fill_percent =
-        ex->page_count ? 100.0 * (double)out->entries / ((double)ex->page_count * NX_BUCKET_CAPACITY)
-                       : 0.0;
+        out->buckets ? 100.0 * (double)out->entries / ((double)out->buckets * NX_BUCKET_CAPACITY)
+                     : 0.0;
 }
 
-uint32_t nx_exthash_bucket_count(nx_exthash *ex) { return ex->page_count; }
+uint32_t nx_exthash_bucket_count(nx_exthash *ex)
+{
+    pthread_rwlock_rdlock(&ex->dir_lock);
+    uint32_t n = ex->page_count;
+    pthread_rwlock_unlock(&ex->dir_lock);
+    return n;
+}

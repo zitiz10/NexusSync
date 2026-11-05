@@ -97,7 +97,14 @@ typedef struct {
     uint64_t size;
     uint8_t sha256[32];  /* whole-file hash the client computed */
     uint64_t bytes_sent; /* bytes that crossed the network for this upload */
+    /* Which file this is a new version of (SPEC §12 versionOf):
+     *   0               the newest file of this owner with this name, if any
+     *   NX_VERSION_NONE a new file (version 1), even if the name exists
+     *   other           that file id (same owner), else NX_ENGINE_NOT_FOUND */
+    uint64_t version_of;
 } nx_commit_meta;
+
+#define NX_VERSION_NONE UINT64_MAX
 
 typedef struct {
     uint64_t file_id;

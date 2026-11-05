@@ -9,6 +9,7 @@
  *   - sessions (create, look up, expire, delete) and login rate limits
  */
 #include "api/auth.h"
+#include "crypto/sha256.h"
 #include "net/http.h"
 #include "net/static.h"
 #include "net/ws.h"
@@ -300,7 +301,7 @@ static void test_validation(void)
 static void test_sessions_and_rate_limits(void)
 {
     nx_auth *a;
-    REQUIRE(nx_auth_create(3600, &a) == 0);
+    REQUIRE(nx_auth_create(3600, NULL, &a) == 0);
     char t1[65], t2[65], t3[65];
     REQUIRE(nx_session_create(a, 7, t1) == 0 && nx_session_create(a, 7, t2) == 0 &&
             nx_session_create(a, 9, t3) == 0);
@@ -323,12 +324,12 @@ static void test_sessions_and_rate_limits(void)
     CHECK(nx_session_lookup(a, t1, &uid) && uid == 299);
     nx_auth_destroy(a);
 
-    REQUIRE(nx_auth_create(0, &a) == 0); /* ttl 0: expired at once */
+    REQUIRE(nx_auth_create(0, NULL, &a) == 0); /* ttl 0: expired at once */
     REQUIRE(nx_session_create(a, 1, t1) == 0);
     CHECK(!nx_session_lookup(a, t1, &uid));
     nx_auth_destroy(a);
 
-    REQUIRE(nx_auth_create(3600, &a) == 0);
+    REQUIRE(nx_auth_create(3600, NULL, &a) == 0);
     uint64_t now = 1000000;
     for (int i = 0; i < NX_LOGIN_FAILS_PER_USER; i++) {
         CHECK(!nx_rl_blocked(a, "riya", "10.0.0.5", now));
@@ -355,6 +356,49 @@ static void test_sessions_and_rate_limits(void)
     nx_auth_destroy(a);
 }
 
+/* Sessions survive a restart (D-030); a logout stays logged out; a
+ * damaged file means everyone signs in again, nothing worse. */
+static void test_sessions_persist(void)
+{
+    char dir[600], path[700];
+    nx_test_tmpdir("sessions", dir, sizeof dir);
+    nx_auth *a;
+    REQUIRE(nx_auth_create(3600, dir, &a) == 0);
+    char t1[65], t2[65], t3[65];
+    REQUIRE(nx_session_create(a, 4, t1) == 0 && nx_session_create(a, 5, t2) == 0 &&
+            nx_session_create(a, 6, t3) == 0);
+    nx_session_delete(a, t2);
+    nx_session_delete_user(a, 6);
+    nx_auth_destroy(a); /* no shutdown step needed: every change was already saved */
+    REQUIRE(nx_auth_create(3600, dir, &a) == 0);
+    uint32_t uid = 0;
+    CHECK(nx_session_lookup(a, t1, &uid) && uid == 4);
+    CHECK(!nx_session_lookup(a, t2, &uid));
+    CHECK(!nx_session_lookup(a, t3, &uid));
+    CHECK_EQ_U64(nx_session_count(a), 1);
+    nx_auth_destroy(a);
+    /* The file holds token hashes only, never the token itself. */
+    snprintf(path, sizeof path, "%s/sessions", dir);
+    size_t n;
+    uint8_t *raw = nx_read_file(path, &n);
+    REQUIRE(raw);
+    uint8_t tok[32];
+    REQUIRE(nx_unhex(t1, tok, 32) == 0);
+    bool leaked = false;
+    for (size_t i = 0; i + 32 <= n; i++)
+        leaked = leaked || memcmp(raw + i, tok, 32) == 0;
+    CHECK(!leaked);
+    raw[n / 2] ^= 0x40; /* damage it */
+    plat_file *f;
+    REQUIRE(plat_file_open(path, PLAT_O_WRITE, &f) == 0);
+    REQUIRE(plat_pwrite_all(f, raw, n, 0) == 0);
+    plat_file_close(f);
+    free(raw);
+    REQUIRE(nx_auth_create(3600, dir, &a) == 0);
+    CHECK(!nx_session_lookup(a, t1, &uid));
+    nx_auth_destroy(a);
+}
+
 static const nx_test_case TESTS[] = {
     NX_CASE(test_http_valid),
     NX_CASE(test_http_malformed),
@@ -365,6 +409,7 @@ static const nx_test_case TESTS[] = {
     NX_CASE(test_static_paths),
     NX_CASE(test_validation),
     NX_CASE(test_sessions_and_rate_limits),
+    NX_CASE(test_sessions_persist),
 };
 
 NX_TEST_MAIN(TESTS)

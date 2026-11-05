@@ -3,8 +3,10 @@
  *
  * Sessions: the browser holds a random 32-byte token (hex, in the
  * HttpOnly nx_session cookie). The server keeps only SHA-256(token) ->
- * {user, expiry} in memory, so even a memory dump does not reveal usable
- * tokens. A restart signs everyone out (documented).
+ * {user, expiry}, so neither memory nor disk ever holds a usable token.
+ * The table is also saved to data/sessions (rewritten atomically and
+ * fsynced before a login answers), so a crash or restart does not sign
+ * anyone out (DECISIONS D-030).
  *
  * Rate limits: 5 failed logins per username and 20 per IP address in any
  * 60 s window. While a key is over its limit the request is refused with
@@ -25,7 +27,9 @@
 #define NX_PASSWORD_MIN 10
 #define NX_PASSWORD_MAX 256
 
-int nx_auth_create(uint32_t session_ttl_s, nx_auth **out);
+/* data_dir: where the sessions file lives, or NULL to keep sessions in
+ * memory only (tests). Loads saved sessions that have not expired. */
+int nx_auth_create(uint32_t session_ttl_s, const char *data_dir, nx_auth **out);
 void nx_auth_destroy(nx_auth *a);
 
 /* token_hex receives 64 hex characters + NUL. */

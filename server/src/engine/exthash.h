@@ -104,6 +104,7 @@ typedef struct {
     double avg_fill_percent;
 } nx_exthash_stats;
 
+/* Take the shared lock themselves: call without holding it. */
 void nx_exthash_get_stats(nx_exthash *ex, nx_exthash_stats *out);
 uint32_t nx_exthash_bucket_count(nx_exthash *ex);
 

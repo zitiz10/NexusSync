@@ -4,6 +4,6 @@
 /* Software version, reported by --version and GET /api/health. */
 #define NX_VERSION "0.1.0"
 /* Version of docs/SPEC.md this build implements. */
-#define NX_SPEC_VERSION "1.4"
+#define NX_SPEC_VERSION "1.5"
 
 #endif

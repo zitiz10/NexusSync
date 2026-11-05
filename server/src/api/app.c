@@ -2,6 +2,7 @@
 #include "api/app.h"
 
 #include "api/auth.h"
+#include "api/uploads.h"
 #include "util/json_out.h"
 #include "util/log.h"
 
@@ -121,11 +122,13 @@ int nx_app_create(const nx_config *cfg, nx_app **out)
         if (code[i] >= 'a' && code[i] <= 'z')
             code[i] = (char)(code[i] - 32);
     snprintf(app->join_code, sizeof app->join_code, "%.8s", code);
-    if (nx_auth_create(cfg->session_ttl_s, &app->auth) != 0 || nx_hub_create(&app->hub) != 0)
+    if (nx_auth_create(cfg->session_ttl_s, cfg->data_dir, &app->auth) != 0 ||
+        nx_uploads_create(&app->uploads) != 0 || nx_hub_create(&app->hub) != 0)
         goto fail;
     *out = app;
     return 0;
 fail:
+    nx_uploads_destroy(app->uploads);
     nx_auth_destroy(app->auth);
     pthread_mutex_destroy(&app->join_mu);
     free(app);
@@ -157,6 +160,9 @@ static void *bg_main(void *arg)
                 LOG_ERROR("app", "background checkpoint failed");
             next = plat_now_mono_ms() + (uint64_t)app->cfg.checkpoint_interval_s * 1000u;
         }
+        size_t expired = nx_uploads_expire(app->uploads, app->cfg.upload_session_ttl_s);
+        if (expired)
+            LOG_INFO("app", "upload sessions expired count=%zu", expired);
         nx_engine_get_stats(app->engine, &st);
         if (st.checkpoints != seen) {
             seen = st.checkpoints;
@@ -209,6 +215,7 @@ void nx_app_destroy(nx_app *app)
     nx_hub_destroy(app->hub); /* delivers server.shutdown first */
     if (app->engine && nx_engine_close(app->engine) != 0)
         LOG_ERROR("app", "final checkpoint failed; the next start recovers from the log");
+    nx_uploads_destroy(app->uploads);
     nx_auth_destroy(app->auth);
     pthread_mutex_destroy(&app->join_mu);
     free(app);

@@ -1,13 +1,17 @@
 #!/usr/bin/env python3
-"""Run every test suite: C server tests (under sanitizers where available)
+"""Run every test suite: C server tests (under sanitizers where available),
+the real-process concurrency test (8 CLI clients against a real nexusd),
 and the web unit tests. Exit code 0 only if all pass.
 
 Works on Linux, macOS, and Windows (run from an MSYS2 UCRT64 shell so
 `make` and gcc are on PATH).
 
-    python3 scripts/check.py            # server + web
+    python3 scripts/check.py            # server + concurrency + web
     python3 scripts/check.py --server   # only the C tests
     python3 scripts/check.py --web      # only the web tests
+
+The crash test is separate because it takes minutes:
+    python3 scripts/crash_test.py 50
 """
 import argparse
 import shutil
@@ -45,6 +49,8 @@ def main() -> int:
     results = []
     if do_server:
         results.append(("server", run("server", ["make", "-C", "server", "test"], ROOT)))
+    if not args.server and not args.web:
+        results.append(("concurrency", run("concurrency", [sys.executable, "scripts/concurrency_test.py"], ROOT)))
     if do_web:
         web = ROOT / "web"
         if not (web / "node_modules").is_dir():

@@ -98,6 +98,11 @@ LIB := $(OUT)/libnexus.a
 MAIN_OBJ := $(OUT)/obj/src/main.o
 NEXUSD := $(OUT)/nexusd$(EXE)
 
+# The nexus CLI (SPEC §17) shares the chunker, crypto, and platform code.
+CLI_SRC := $(wildcard ../cli/*.c)
+CLI_OBJ := $(patsubst ../cli/%.c,$(OUT)/obj/cli/%.o,$(CLI_SRC))
+NEXUS_CLI := $(OUT)/nexus$(EXE)
+
 UNIT_SRC := $(wildcard tests/unit/test_*.c)
 INTEG_SRC := $(wildcard tests/integration/test_*.c)
 TEST_BINS := $(patsubst tests/%.c,$(OUT)/tests/%$(EXE),$(UNIT_SRC) $(INTEG_SRC))
@@ -137,7 +142,7 @@ test:
 	@$(MAKE) --no-print-directory MODE=debug bins test-run
 endif
 
-bins: $(NEXUSD) $(TEST_BINS) $(TOOL_BINS)
+bins: $(NEXUSD) $(NEXUS_CLI) $(TEST_BINS) $(TOOL_BINS)
 
 fixtures: $(FIXTURE_STAMP)
 
@@ -180,6 +185,10 @@ $(OUT)/obj/vendor/%.o: vendor/%.c
 	@mkdir -p $(dir $@)
 	$(CC) -std=c11 -w -Ivendor -MMD -MP $(MODE_CFLAGS) $(CFLAGS) -c $< -o $@
 
+$(OUT)/obj/cli/%.o: ../cli/%.c
+	@mkdir -p $(dir $@)
+	$(CC) $(ALL_CFLAGS) -I../cli -c $< -o $@
+
 # Test objects first: make 3.81 uses the first pattern rule that matches.
 $(OUT)/obj/tests/%.o: tests/%.c
 	@mkdir -p $(dir $@)
@@ -195,6 +204,9 @@ $(LIB): $(LIB_OBJ)
 	$(AR) rcs $@ $^
 
 $(NEXUSD): $(MAIN_OBJ) $(LIB)
+	$(CC) $(ALL_LDFLAGS) -o $@ $^ $(OS_LDLIBS)
+
+$(NEXUS_CLI): $(CLI_OBJ) $(LIB)
 	$(CC) $(ALL_LDFLAGS) -o $@ $^ $(OS_LDLIBS)
 
 $(OUT)/tests/%$(EXE): $(OUT)/obj/tests/%.o $(LIB)

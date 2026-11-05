@@ -96,7 +96,7 @@ size_t nx_catalog_user_count(nx_catalog *c);
 int nx_catalog_users(nx_catalog *c, nx_user **out, size_t *count);
 
 bool nx_catalog_file_by_id(nx_catalog *c, uint64_t id, nx_file *out);
-/* Newest version of (owner, name), if any. */
+/* Newest file (highest id) of owner with this name, if any. */
 bool nx_catalog_latest_version(nx_catalog *c, uint32_t owner, const char *name, nx_file *out);
 /* Copies every file passing the filter (NULL = all) into a malloc'd array. */
 typedef bool (*nx_file_filter)(const nx_file *f, void *ctx);

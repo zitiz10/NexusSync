@@ -7,7 +7,7 @@ Platforms: macOS (verified locally on Apple Silicon), Linux and Windows (verifie
 
 Current scope agreed with the team: M1–M7 in this run; M8–M14 in later sessions.
 
-**Status (2026-11-05): M1–M6 done and committed. Next: M7.** See "Handoff notes for M7" below.
+**Status (2026-11-06): M1–M7 done and committed: the agreed scope of this run (M1–M7) is complete. Next: M8 (frontend).** See "Handoff notes for M8" below.
 
 ## M1 Scaffold
 - [x] Repo layout per `CLAUDE.md` (plus `server/src/platform/`); module folders fill in from M2
@@ -62,26 +62,33 @@ Current scope agreed with the team: M1–M7 in this run; M8–M14 in later sessi
 - [x] Full suite: `python3 scripts/check.py` passes (87 C tests in 13 executables under ASan+UBSan, web 16/16), `-Werror` clean
 
 ## M7 Upload, download, concurrency
-- [ ] Manifest, chunks, commit, cancel, resume
-- [ ] 8 concurrent CLI clients uploading overlapping files, then `--fsck` clean
-- [ ] Downloads match SHA-256
-- [ ] `scripts/crash_test.py` against the real server
+- [x] Manifest, chunks, commit, cancel, resume: full protocol over sockets with every validation (names, sizes, chunk counts, hashes, pages, per-chunk `unknown_index` / `length_mismatch` / `hash_mismatch`, 409 `manifest_incomplete` and `missing_chunks` with indices, 422 `file_hash_mismatch`, 429 session limit); identical re-upload sends 0 bytes; edited copy sent 4.8 KB of 300 KB; versions and `versionOf: null`; resume needed 27 of 53 blocks; cancel (3/3 tests)
+- [x] Files API: list (chain heads, q, sort, scope, paging), detail with versions and block counts, streamed download with `Content-Disposition`, HEAD, share/unshare, delete; access rules (owner, shared read-only, admin; others get 404); bad ids rejected by the router
+- [x] `nexus` CLI (login, put, get, ls, rm; session file mode 0600), checked against a real server: dedup, CDC vs fixed after an edit (1 vs 417 new blocks), byte-identical download
+- [x] 8 concurrent CLI clients uploading overlapping files, then `--fsck` clean: `scripts/concurrency_test.py`, 56 files / 72 MB in under 1 s, no warnings in the server log, part of `check.py`
+- [x] Downloads match SHA-256: every file in the concurrency and crash tests downloaded and compared; `nexus get` verifies and discards mismatches
+- [x] `scripts/crash_test.py` against the real server: 50 rounds (seed 7) clean: 4,685 operations, 121 uploads in flight at a kill, each all-or-nothing, fsck clean 50/50; rerun on the final code (seed 11): 50/50 clean, 4,226 operations, 108 uploads in flight at a kill
+- [x] Sessions survive a kill (D-030), so the demo's crash step needs no re-login; persistence unit-tested (hashes only, damaged file handled)
+- [x] ThreadSanitizer clean on server, upload, net, engine, and index tests after fixing a real race it found in index statistics (D-033)
+- [x] Full suite: `python3 scripts/check.py` passes (91 C tests in 14 executables under ASan+UBSan, concurrency test, web 16/16), `-Werror` clean
 
 ## M8–M14
 Not started (later sessions). See SPEC §14.
 
-## Handoff notes for M7 (read before starting)
+## Handoff notes for M8 (read before starting)
 
-**State of the repo.** `main` is clean at the M6 commit. No GitHub remote yet; do not push.
+**State of the repo.** `main` is clean at the M7 commit. No GitHub remote yet; do not push. Scope agreed for this run (M1–M7) is done; M8–M14 are the frontend and finishing milestones.
 
-**Done in M6 that M7 builds on.**
-- Routes are a table in `net/router.c` (`ROUTES`): add upload, file, stats routes there; gates (state, CSRF, auth, admin) apply automatically. `nx_route_body_limit` already returns 8 MB for `/api/uploads/*/manifest` and `/chunks`.
-- Path parameters (`/api/files/{id}`) are not supported by the table yet: matching is exact. Add a prefix match with id parsing (bounds-checked) for M7.
-- Downloads must stream: `nx_engine_read_file` with a callback that `plat_send_all`s each block, after sending a head with the file size as `Content-Length`. On `NX_ENGINE_CORRUPT` mid-stream, close the connection (the client sees a short body) and emit `engine.corruption`.
-- Events: `nx_hub_publish(app->hub, type, data_json, audience)`. `stats.updated` (throttled 2/s) still needs a producer.
-- The background thread in `api/app.c` runs checkpoints every `checkpoint_interval_s` and announces every checkpoint.
+**What the frontend can rely on now.**
+- Auth: `/api/auth/join|login|logout`, `/api/me`; the cookie is HttpOnly, so the app learns who is signed in from `/api/me`. Every mutating request needs `X-NexusSync: 1`.
+- Files: `/api/files` (list), `/api/files/{id}` (detail with versions, blocks), `/content`, PATCH `{shared}`, DELETE.
+- Uploads: the protocol of SPEC §12, already exercised by the CLI (`cli/main.c` `cmd_put` is a reference client).
+- Events on `/ws`: `upload.progress` (phases manifest, sending, committing; `done`/`total` in bytes; `newTiles` empty until the block map exists), `upload.committed`, `upload.failed`, `file.updated`, `file.deleted`, `engine.checkpoint`, `engine.recovery`, `engine.corruption`, `server.shutdown`.
+- `/api/health` reports `recovering` while the engine opens; the static app is served meanwhile (D-026).
 
-**Still open from SPEC §8/§12 for later milestones:** `/api/stats`, `/api/blockmap`, `/api/compare`, the rest of `/api/admin/*`, `--rebuild-index` (M12).
+**Not built yet (needed by M9–M11):** `/api/stats` and the `stats.updated` event, `/api/blockmap` and real `newTiles`, `/api/compare`, the remaining `/api/admin/*` (users, events, recoveries, addresses, gc, scan), `nexus stats`.
+
+**Before a demo:** `python3 scripts/crash_test.py 50` (about 2 minutes) and `python3 scripts/check.py`.
 
 ## Open problems
 - **Windows and Linux not yet verified.** `plat_win32.c` and the Linux paths of `plat_posix.c` (getrandom, MSG_NOSIGNAL) have not been compiled. They will be once the repo is pushed to GitHub and CI runs, or when a teammate runs `make -C server test` on a Windows laptop (MSYS2) or Linux.

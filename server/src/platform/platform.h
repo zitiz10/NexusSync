@@ -40,7 +40,10 @@ enum {
     PLAT_O_WRITE = 2,  /* open for writing (implies reading is also allowed) */
     PLAT_O_CREATE = 4, /* create if missing */
     PLAT_O_TRUNC = 8,  /* truncate to 0 bytes on open */
-    PLAT_O_EXCL = 16   /* with CREATE: fail if the file exists */
+    PLAT_O_EXCL = 16,  /* with CREATE: fail if the file exists */
+    PLAT_O_PRIVATE = 32 /* owner-only access: mode 0600 on POSIX (also tightens an
+                           existing file); on Windows files under the user's profile
+                           are private by default, so the flag changes nothing */
 };
 
 int plat_file_open(const char *path, int flags, plat_file **out);

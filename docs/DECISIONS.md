@@ -273,3 +273,44 @@ Real logins use 600,000 iterations (SPEC §13), about 0.2 s each. The integratio
 - Rate limits are checked *before* hashing, so a flood of guesses cannot burn the server's CPU.
 - Known limit: `/api/auth/join` answers `username_taken`, which reveals that a name exists to anyone holding the join code. Acceptable inside one lab.
 
+## D-029 Upload limits (M7)
+
+Upload sessions live in memory: per declared chunk, 36 bytes of manifest plus a flag and a hash-map slot. Without limits, one client could declare a billion chunks and exhaust the server's memory. Chosen limits:
+- files up to **8 GiB** (a 4 GB ISO, the largest demo file, fits with room to spare);
+- **8 open sessions per user** (the browser uploads a few files at a time);
+- **4,194,304 declared chunks** across all sessions, about 150 MB of manifests in the worst case. A typical 4 GB file has about 800,000 CDC blocks.
+
+The chunk count must also fit the size and chunker, so a client cannot declare 4 million chunks for a 10-byte file. Raising the limits later is a constant change in `api/uploads.h`.
+
+## D-030 Sessions survive restarts (M7, changes SPEC §13)
+
+**Conflict.** SPEC §13 said a restart signs everyone out. DEMO.md's crash step (5:45–7:30) expects the clients to show "retrying", then carry on, and the interrupted upload to resume, without signing in again. With in-memory sessions every laptop would land on the sign-in screen during the most important part of the demo. The crash test hit this at once.
+
+**Chosen.** Keep SHA-256(token) → {user, expiry} in `data/sessions`. The whole table is rewritten atomically (temp file, fsync, rename, fsync directory) **before** a login answers and after a logout or account change. Then a session never outlives its logout, and a login never answers with a session that a crash would lose.
+
+**Why this is safe.** The file holds hashes of tokens, never the tokens (a unit test checks the token bytes do not appear in it), and it is created with mode 0600. A damaged file means everyone signs in again, nothing worse.
+
+**Cost.** One small fsync per login and logout, which is negligible at lab scale.
+
+**Alternative rejected.** Sessions as WAL records in the catalog: durable for free, but every login would become an engine transaction, and session state would mix with file metadata for no gain.
+
+## D-031 The CLI arrives in M7 (M7)
+
+M7's acceptance needs "8 concurrent CLI clients", so a working `nexus` (`login`, `put`, `get`, `ls`, `rm`) is built now; `stats` and the polish come in M13.
+- Build: `make -C server` also builds `server/build/nexus` from `cli/`, linking the same chunker, crypto, platform, and cJSON code as the server. That guarantees the CLI chunks byte for byte like the server.
+- `NEXUS_HOME` and `NEXUS_PASSWORD` exist for scripts (crash and concurrency tests, demo seeding). A password in an environment variable is visible to the same user's processes; the interactive prompt remains the normal path.
+- `put` reads the file twice (chunk and hash, then send only the needed blocks), so memory stays at about 44 bytes per block, whatever the file size.
+
+## D-032 Real-process tests: concurrency_test.py and crash_test.py (M7)
+
+- `scripts/concurrency_test.py` runs 8 CLI processes (8 users) uploading overlapping files at the same moment, then verifies every download's SHA-256, the listings, and `--fsck`. It is part of `scripts/check.py` (about 10 s).
+- `scripts/crash_test.py N` hard-kills the real server N times during random uploads and deletes from several CLI processes.
+  - After each kill: restart, then check that exactly the committed files exist, each with its SHA-256.
+  - An operation in flight at the kill must have happened completely or not at all (checked by its unique name).
+  - After a clean stop, `--fsck` must pass.
+- CI runs both on Linux, macOS, and Windows (10 crash rounds; the full 50 before a demo).
+
+## D-033 Data race in index statistics (M7 fix in M3 code)
+
+ThreadSanitizer, running the M7 upload tests, found `nx_exthash_get_stats` reading the directory depth and page count without the directory lock while a split changed them. Before M6 nothing read statistics concurrently. The server's background thread now does so every 250 ms. Fix: the stats functions take the shared directory lock. All callers were checked: none holds the lock already.
+

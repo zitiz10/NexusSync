@@ -95,11 +95,17 @@ int plat_file_open(const char *path, int flags, plat_file **out)
         oflags |= O_EXCL;
 
     int fd;
+    mode_t mode = (flags & PLAT_O_PRIVATE) ? 0600 : 0644;
     do {
-        fd = open(path, oflags, 0644);
+        fd = open(path, oflags, mode);
     } while (fd < 0 && errno == EINTR);
     if (fd < 0) {
         set_err("open", path);
+        return -1;
+    }
+    if ((flags & PLAT_O_PRIVATE) && fchmod(fd, 0600) != 0) {
+        set_err("fchmod", path);
+        close(fd);
         return -1;
     }
     plat_file *f = malloc(sizeof *f);

@@ -1,6 +1,6 @@
 # NexusSync — technical specification
 
-Version 1.4 (1.4: `data/join_code` file; `/api/health` progress shape; static app served while recovering; username and join-code rules written down in §13. 1.3: WAL segment files get a 16-byte header; recovery cut rules and the unsynced `CHECKPOINT` record written down in §5 and §8. 1.1: server portable to Linux, macOS, and Windows; in-repo crypto replaces OpenSSL; scripts in Python. 1.2: `recipes.dat` gains a 16-byte file header; superblock byte offsets and the doublewrite format written down; one transaction mutex replaces the checkpoint rwlock and the 256 index stripes in §9, see DECISIONS D-016. No WAL, chunker, or API changes). Source of truth for behavior, formats, and the API. Section numbers are referenced from `CLAUDE.md`; keep them stable.
+Version 1.5 (1.5: sessions persisted in `data/sessions` (D-030); upload limits and validation rules; the files list shows version-chain heads; CLI environment variables. 1.4: `data/join_code` file; `/api/health` progress shape; static app served while recovering; username and join-code rules written down in §13. 1.3: WAL segment files get a 16-byte header; recovery cut rules and the unsynced `CHECKPOINT` record written down in §5 and §8. 1.1: server portable to Linux, macOS, and Windows; in-repo crypto replaces OpenSSL; scripts in Python. 1.2: `recipes.dat` gains a 16-byte file header; superblock byte offsets and the doublewrite format written down; one transaction mutex replaces the checkpoint rwlock and the 256 index stripes in §9, see DECISIONS D-016. No WAL, chunker, or API changes). Source of truth for behavior, formats, and the API. Section numbers are referenced from `CLAUDE.md`; keep them stable.
 
 ## 1. Goals and non-goals
 
@@ -74,6 +74,7 @@ data/
   wal/wal.00000001 ...           log segments (64 MB each)
   doublewrite.bin                checkpoint page staging
   join_code                      current join code (one line), replaced atomically on rotation
+  sessions                       SHA-256 of each session token + user + expiry (mode 0600), replaced atomically
 ```
 
 All integers little-endian, fixed width. Every format starts with a 4-byte magic and a `u16` version.
@@ -259,7 +260,7 @@ All JSON uses camelCase. Errors: status code plus `{"error":{"code":"...","messa
 - `PATCH /api/files/{id}` `{shared: bool}` (owner or admin)
 - `DELETE /api/files/{id}` (owner or admin) → 204
 
-File object: `{id, name, version, prevVersionId, ownerId, ownerName, size, chunkCount, chunker, sha256, bytesSent, reusedPercent, createdAt, shared}`.
+File object: `{id, name, version, prevVersionId, ownerId, ownerName, size, chunkCount, chunker, sha256, bytesSent, reusedPercent, createdAt, shared}`. `reusedPercent` = 100 × (size − bytesSent) / size, one decimal (100 for empty files). The list shows the head of each version chain (a file no other file names as `prevVersionId`), hides files flagged deleted, and its `cursor` is an opaque offset. A file the caller may not read answers 404, never 403, so ids reveal nothing. On a damaged block a download stops early (the connection closes) and `engine.corruption` is emitted.
 
 **Uploads**
 1. `POST /api/uploads` `{name, size, sha256, chunker:"cdc", chunkCount, versionOf?}` → `{uploadId, manifestPageSize: 8192, maxChunkBody: 8388608}`. If a file with the same name exists for this user, the new file becomes its next version unless `versionOf: null` is sent explicitly.
@@ -267,7 +268,9 @@ File object: `{id, name, version, prevVersionId, ownerId, ownerName, size, chunk
 3. `POST /api/uploads/{id}/chunks` body: repeated (`u32 index`, `u32 len`, `data`). Server checks each `len` matches the manifest, hashes the data, compares to the manifest hash, rejects mismatches individually → `{accepted:[...], rejected:[{index, reason:"hash_mismatch"|"length_mismatch"|"unknown_index"}]}`. Clients send up to 3 chunk requests in parallel.
 4. `POST /api/uploads/{id}/commit` → 201 File plus `{stats:{chunks, newChunks, bytesSent, reusedPercent}}`. Errors: 409 `missing_chunks` with indices (client sends them and commits again), 422 `file_hash_mismatch` (when `verify_on_commit` finds the rebuilt file differs from `sha256`), 507 `disk_full`.
 5. `DELETE /api/uploads/{id}` cancels.
-Sessions expire after `upload_session_ttl_s` of inactivity. A retried upload of the same file finds most blocks present, so resuming costs little.
+Sessions expire after `upload_session_ttl_s` of inactivity.
+
+Validation and limits (DECISIONS D-029): names are 1–255 bytes of UTF-8 without control characters, `/` or `\`, and not `.` or `..`; files are at most 8 GiB; `chunkCount` must fit the size (fixed: exactly ⌈size/4096⌉; CDC: between ⌈size/16384⌉ and ⌊(size−1)/2048⌋+1); every manifest length must be possible for the chunker at that position (only the last block may be short), and one hash always has one length; a resent manifest page must be identical (409 `page_changed`); at most 8 open upload sessions per user (429) and 4,194,304 declared chunks over all sessions (503). `versionOf` absent: next version of the user's newest file with that name; `null`: a new file; an id: that file (the user's own). Upload ids are 32 random hex characters; another user's upload id answers 404. `bytesSent` counts the bytes of accepted chunks. A retried upload of the same file finds most blocks present, so resuming costs little.
 
 **Compare:** `GET /api/compare?a={fileId}&b={fileId}&mode=fixed|cdc&from=0&count=32` → `{mode, totals:{a:{chunks,bytes}, b:{chunks,bytes, reused, sentBytes}}, firstDifference, window:{from, a:[Block], b:[Block]}, minimap:[0|1 per b block, run-length encoded]}`. Block: `{index, size, sha256, reused, matchIndex|null, stored:{containerId, offset, sharedBy}|null}`. For `mode=cdc` with CDC-stored files, results come from recipes directly. For `fixed`, the server rebuilds both files in memory streams, chunks them at 4 KB, and computes matches by hash; `stored` is null. Cache results per (a, b, mode) for 5 min.
 
@@ -283,7 +286,7 @@ Sessions expire after `upload_session_ttl_s` of inactivity. A retried upload of 
 
 - Passwords: PBKDF2-HMAC-SHA256 (in-repo, tested against RFC 7914 §11 and RFC 6070-style vectors), 600,000 iterations, 16-byte random salt, 32-byte output; constant-time comparison (`nx_ct_equal`). Minimum length 10. The iteration count is stored per user so it can be raised later.
 - Secure random bytes: `plat_random_bytes()` uses `getrandom()` on Linux, `arc4random_buf()` on macOS, and `BCryptGenRandom()` on Windows. A failure is fatal; never fall back to `rand()`.
-- Sessions: 32 random bytes from `plat_random_bytes`, hex-encoded in the cookie, stored in memory as SHA-256(token) → {user, expiry}. Restarting the server signs everyone out (acceptable, documented).
+- Sessions: 32 random bytes from `plat_random_bytes`, hex-encoded in the cookie, stored as SHA-256(token) → {user, expiry} in memory and in `data/sessions` ("NXSS", u16 version, u16 0, u32 count, count × (hash[32], u32 user, u64 expires_ms), u32 crc32), rewritten atomically and fsynced before a login answers and after a logout. A crash or restart therefore keeps everyone signed in (DEMO step 5:45, DECISIONS D-030). The token itself is never stored.
 - Join code: 8 characters from `23456789ABCDEFGHJKMNPQRSTUVWXYZ` (no 0/O, 1/I/L), compared case-insensitively in constant time, set at `--init` (random, or `join_code` from the config), stored in `data/join_code`, rotatable by admins. First admin created with `--create-admin` on the server terminal.
 - Usernames: 3–32 characters of `[a-z0-9._-]`, starting with a letter or digit, stored lower-case (input is lower-cased). Display names: 1–64 bytes of valid UTF-8 without control characters or edge spaces. Passwords: 10–256 bytes.
 - Login responses do not reveal whether a username exists: unknown names cost the same PBKDF2 work and get the same 401; `account_disabled` (403) is only reported after a correct password. Wrong join codes count as failures for the IP rate limit.
@@ -350,7 +353,7 @@ nexus ls [--shared]
 nexus rm <id>
 nexus stats
 ```
-Session token stored in `~/.nexussync/session` with mode 0600. Output is plain text; `--json` for scripts.
+Session token stored in `~/.nexussync/session` with mode 0600 (`NEXUS_HOME` overrides the directory). The password is asked on the terminal; scripts may set `NEXUS_PASSWORD`. Output is plain text; `--json` for scripts. `get` writes to `<name>.part`, checks the SHA-256, then renames; a mismatch deletes the partial file. Built by `make -C server` as `server/build/nexus`.
 
 ## 18. Stretch goals (only after M14 is done)
 
