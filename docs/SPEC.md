@@ -136,6 +136,8 @@ SHA-256 for blocks and whole files. Server and CLI use the in-repo implementatio
 ### 6.4 Parity tests
 `server/tests/fixtures/` holds 10 deterministic test files (sizes 0, 1, 2047, 2048, 4096, 16385, 1 MB, 10 MB random, 10 MB text, and the 10 MB text with 300 bytes inserted at offset 5000) and the expected cut points and hashes produced by the C code. Vitest asserts the TypeScript chunker produces identical results. Any mismatch blocks the build.
 
+Storage: the 33 MB of fixture data is not committed. `scripts/make_fixtures.py` regenerates it byte-identically into `server/tests/fixtures/data/` (git-ignored); `make test` and the vitest global setup run it when missing. Committed: `chunks_expected.txt` (written by `make fixtures-expected` from the C chunkers: per file its size and SHA-256, the CDC block lengths, and per method the block count and a digest = SHA-256 over the concatenated block hashes) and `crypto_vectors.txt` (SHA-256, SHA-1, HMAC, PBKDF2, CRC-32 values from Python's `hashlib`/`hmac`/`zlib`). The text fixtures are lab-style CSV; the "insert" fixture adds 300 pseudo-random bytes at offset 5000. CI also runs `scripts/gen_gear.py --check` so the C and TS Gear tables cannot drift.
+
 ## 7. Storage engine
 
 ### 7.1 Containers

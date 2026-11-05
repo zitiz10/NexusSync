@@ -74,3 +74,58 @@ Inside Docker Desktop or WSL, `fsync` goes through a virtual disk managed by a V
 - What is a short write, and what happens if you ignore it? *(Data is silently lost: the rest of the buffer never reaches the file.)*
 - Why is `fsync` on the directory needed after creating a file? *(Otherwise the file's data may be durable but its name may not, so after a crash the file may not exist.)*
 - What does AddressSanitizer catch that a normal test run would not? *(Out-of-bounds and use-after-free accesses that happen not to crash, because the bytes they touch are still mapped.)*
+
+---
+
+## M2 — Chunking and hashing
+
+### What it does
+- **Splits a file into blocks.** `server/src/engine/chunk_cdc.c` and `chunk_fixed.c` decide where each block ends. `chunker.c` wraps them so a file can be fed in pieces of any size and still produce the same blocks.
+- **Fingerprints each block with SHA-256.** `server/src/crypto/sha256.c` implements the standard (FIPS 180-4) directly. The server stores the block under its fingerprint, so a block with an identical fingerprint is never stored twice.
+- **Supports passwords and the WebSocket handshake.**
+  - `hmac.c` and `pbkdf2.c` turn a password into a slow-to-guess hash (used in M6).
+  - `sha1.c` exists only because the WebSocket standard requires it.
+  - `util/crc32.c` is a cheap checksum that detects torn or corrupted records on disk (M3–M5).
+- **Matches the browser exactly.** `web/src/engine/chunker.ts` is a line-by-line copy of the C chunker. The browser chunks and fingerprints the file before uploading, and asks the server which blocks it already has.
+
+### Why content-defined chunking
+Fixed 4 KB blocks fail after an insertion. Add one character at the start of a file and every later byte moves one place, so every block boundary now falls on different content and nothing matches the old version.
+
+Content-defined chunking (CDC) decides boundaries from the content itself:
+- A **rolling hash** runs over the bytes: `h = (h << 1) + GEAR[byte]`.
+- `GEAR` is a table of 256 random 32-bit numbers. Because `h` shifts left once per byte, a byte stops affecting `h` after 32 more bytes, so `h` depends only on the last 32 bytes.
+- When the top bits of `h` are all zero, we cut.
+- After an insertion, the boundaries after it are found at the same *content* again, so those blocks are byte-identical to before.
+
+**Measured on our fixtures:** inserting 300 bytes into a 10 MB CSV, CDC reused **2,169 of 2,170 blocks**; fixed 4 KB blocks reused **1 of 2,561**.
+
+**Normalised chunking.** Before 4 KB we require 14 zero bits (a cut is rare); after 4 KB only 10 (a cut comes soon). This pulls sizes towards 4 KB. Blocks are never smaller than 2 KB (tiny blocks would bloat the index) and never larger than 16 KB (a hard cap). Our measured average is about **4.9 KB**, above 4 KB because no cut is allowed before 2 KB.
+
+### Why two implementations must agree exactly
+The browser decides the blocks and their fingerprints. If its cut points differed from the server's by even one byte, a re-uploaded file would produce different fingerprints and nothing would deduplicate.
+- The JavaScript code uses `>>> 0` after every step to force unsigned 32-bit arithmetic, the same as C's `uint32_t`.
+- One Python script (`scripts/gen_gear.py`) writes the Gear table for both languages from one seed.
+- A test feeds all 10 fixtures through both versions and compares every block length and hash with the reference file `chunks_expected.txt`, written by the C code.
+
+### OS and DBMS concepts
+- **Hashing as an index key (DBMS).** A SHA-256 fingerprint acts as the primary key of a block. Content-addressed storage like this is how Git, restic, and ZFS dedup work.
+- **Streaming with bounded memory (OS).** The chunker never needs more than 16 KB buffered, so a 700 MB ISO is processed with constant memory, whether in the server or in a browser Web Worker reading 8 MB slices.
+- **Checksums vs cryptographic hashes.**
+  - CRC-32 is fast and catches accidental damage such as torn writes and bit flips, but anyone can forge it.
+  - SHA-256 is slower but collision-resistant, so it is safe to use as a block's identity.
+
+### Files to read
+`engine/chunk.h` (parameters and API), `engine/chunk_cdc.c` (about 20 lines of logic), `engine/chunker.c`, `crypto/sha256.c`, `web/src/engine/chunker.ts`, and the tests `server/tests/unit/test_chunk.c` and `web/src/engine/chunker.test.ts`.
+
+### Likely examiner questions
+
+**Q1. "Two different blocks could have the same SHA-256. Then you would return the wrong data."**
+For random data, a collision becomes likely only after about 2^128 blocks (the birthday bound). That is far more blocks than all storage on Earth holds, so the risk is negligible next to disk or RAM errors. No SHA-256 collision has ever been found. Git and most backup tools make the same assumption. We also re-hash every block on download and the whole file at commit, which guards against *corruption*, a different risk from collisions.
+
+**Q2. "Why did you write your own SHA-256 instead of using OpenSSL?"**
+So the server builds on Windows and macOS without installing OpenSSL (`docs/DECISIONS.md` D-002). SHA-256 is a fixed, published algorithm, not something we designed. We check it against the official NIST vectors and against Python's `hashlib` on hundreds of inputs, including every length around the 55/56/64-byte padding edges. We also changed one constant by one bit and confirmed the tests fail. The cost is speed: our C version runs a few hundred MB/s, slower than OpenSSL's assembly but faster than a LAN.
+
+### More questions to practise
+- Why is there a minimum block size? *(Without it, cuts could fall a few bytes apart. That creates millions of tiny blocks, each costing a 52-byte index entry and a lookup.)*
+- What happens to deduplication for a zip or PDF that was edited? *(These formats compress their content, so a small edit changes most of the compressed bytes and few blocks match. We show this honestly in the demo.)*
+- Why does PBKDF2 use 600,000 iterations? *(To make each password guess cost about a quarter-second of CPU. An attacker who steals the user table must pay that for every guess, while a real login pays it once.)*

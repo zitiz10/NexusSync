@@ -19,11 +19,11 @@ Current scope agreed with the team: M1–M7 in this run; M8–M14 in later sessi
 - [x] PROGRESS, DECISIONS (D-001..D-009), LEARNING (M1) created; SPEC/CLAUDE/DEMO/PROMPT updated to v1.1 for cross-platform
 
 ## M2 Chunkers and hashing
-- [ ] Fixed and CDC chunkers
-- [ ] Gear generator writes C and TS tables from one seed
-- [ ] SHA-256, SHA-1, HMAC-SHA256, PBKDF2 pass NIST/RFC vectors
-- [ ] Fixture cut points stable (10 fixtures per SPEC §6.4)
-- [ ] TS chunker passes parity tests (vitest)
+- [x] Fixed and CDC chunkers + streaming chunker; any piece size (1 byte to 1 MB) gives the same blocks as whole-buffer chunking
+- [x] Gear generator writes C and TS tables from one seed; `--check` added to CI
+- [x] SHA-256, SHA-1, HMAC-SHA256, PBKDF2, CRC-32 pass NIST/RFC vectors and 352 Python-reference vectors; mutation check fails as expected; PBKDF2 600k = 230 ms (ASan)
+- [x] Fixture cut points stable (10 fixtures, `chunks_expected.txt` from the C code); 300-byte insert: CDC reuses 2169/2170 blocks, fixed 1/2561; average CDC block 4.9 KB
+- [x] TS chunker + hash-wasm match the C reference on all 10 fixtures in 8 MB and odd-sized windows (vitest 16/16); mutation check fails as expected
 
 ## M3 Containers, buffer pool, index
 - [ ] Containers append, seal, read back with CRC check

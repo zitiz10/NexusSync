@@ -96,3 +96,27 @@ On the development Mac, `xcrun` defaulted to a leftover beta `MacOSX27.0.sdk` th
 **Fix.** When only the Command Line Tools are active and `SDKROOT` is not set, the Makefile uses `CommandLineTools/SDKs/MacOSX.sdk`. The CLT installer keeps that symlink pointing at the SDK that matches its own linker. An explicit `SDKROOT` always wins. Machines with full Xcode are unaffected.
 
 **Alternative.** Delete the stale SDK, which needs `sudo`. That is up to the machine's owner.
+
+## D-010 Chunker fixtures: generate, do not commit (M2)
+
+SPEC §6.4 needs 10 fixture files, about 33 MB in total. Committing them would bloat every clone permanently, because git keeps old versions forever.
+
+**Chosen.**
+- `scripts/make_fixtures.py` regenerates the data byte-identically on any OS. Random content is SHA-256 in counter mode; the text is CSV built from SplitMix64.
+- Only the small reference files are committed: `chunks_expected.txt` (36 KB) and `crypto_vectors.txt`.
+- The file SHA-256 in `chunks_expected.txt` catches a generator that silently changed its output.
+
+**Alternative.** Git LFS. It adds a tool every teammate must install, so we did not use it.
+
+## D-011 Reference implementations for crypto tests (M2)
+
+- **Inputs** are SplitMix64 bytes. The generator is a few lines and identical in C (`tests/nx_test_util.h`) and Python (`scripts/make_fixtures.py`), so the C test can rebuild every input itself without reading data files.
+- **Expected outputs** come from Python's `hashlib`, `hmac`, and `zlib`, which wrap OpenSSL and zlib. They are an implementation independent of ours.
+- **Published vectors** are also checked: the NIST examples, RFC 4231, RFC 7914, and the RFC 6455 handshake example.
+- **The tests can fail.** We changed one SHA-256 round constant by one bit and the suite failed, then restored it.
+
+## D-012 Web packages added in M2
+
+- `hash-wasm` (runtime, already allowed by CLAUDE.md): SHA-256 in the browser over plain HTTP, where `crypto.subtle` is unavailable.
+- `@types/node` (dev only): types for `node:fs` in the vitest parity test, which reads fixture files. It ships nothing to the browser.
+- npm 11 skipped the install script of `fsevents`, an optional macOS file watcher. We left it unapproved: Vite falls back to polling and builds normally.

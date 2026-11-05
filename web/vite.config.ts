@@ -20,5 +20,7 @@ export default defineConfig({
   test: {
     include: ['src/**/*.test.ts'],
     environment: 'node',
+    globalSetup: ['test/globalSetup.ts'],
+    testTimeout: 60_000,
   },
 });

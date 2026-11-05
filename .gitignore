@@ -16,3 +16,4 @@ __pycache__/
 *.o
 *.d
 *.tsbuildinfo
+server/tests/fixtures/data/

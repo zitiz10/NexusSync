@@ -16,6 +16,8 @@ jobs:
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
+      - name: Gear tables match their generator
+        run: python3 scripts/gen_gear.py --check
       - name: Build release with warnings as errors
         run: make -C server WERROR=1
       - name: nexusd --version
