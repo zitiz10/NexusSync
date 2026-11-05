@@ -1,7 +1,7 @@
 # NexusSync — progress
 
 Checklist of every build step in `docs/SPEC.md` §14. A box is ticked only after the check was actually executed and passed.
-Resume after an interruption: read `CLAUDE.md`, then this file, re-run the tests of the last ticked step, continue from the first unticked item.
+Resume after an interruption: read `CLAUDE.md`, then this file, re-run the tests of the last ticked step, continue from the first unticked item that is not marked blocked (the M1 CI item waits for a GitHub repo).
 
 Platforms: macOS (verified locally on Apple Silicon), Linux and Windows (verified in CI once the repo is pushed; see "Open problems").
 
@@ -17,7 +17,7 @@ Sessions so far: session 1 built M1–M3; session 2 built M4–M8. **The next se
 - [x] Platform layer: POSIX implemented, 11/11 tests pass under ASan+UBSan and TSan on macOS. Win32 implemented but **not yet compiled** (no Windows here)
 - [x] Vite app builds (`npm run build`), vitest 4/4, `npm audit` 0 vulnerabilities
 - [x] `scripts/check.py` runs both test suites (verified on macOS)
-- [ ] CI workflow for ubuntu / macos / windows: written (`.github/workflows/ci.yml`), **not run yet**: needs a GitHub repo
+- [ ] CI workflow for ubuntu / macos / windows: written (`.github/workflows/ci.yml`, now also running the concurrency, crash, and Playwright tests), **not run yet**: blocked on the team creating a GitHub repo. This does not block M9; skip it when resuming.
 - [x] PROGRESS, DECISIONS (D-001..D-009), LEARNING (M1) created; SPEC/CLAUDE/DEMO/PROMPT updated to v1.1 for cross-platform
 
 ## M2 Chunkers and hashing
