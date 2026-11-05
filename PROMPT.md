@@ -6,15 +6,14 @@ This project is meant to be built by Claude Code in one long autonomous run, the
 
 Do these first so the run does not stop on something that needs your password or a decision.
 
-1. **A Linux machine for development.** Ubuntu 24.04, native or in WSL2. Claude Code runs here.
-2. **System packages** (needs `sudo`, so do it yourself):
+1. **A development machine.** macOS, Windows (MSYS2 UCRT64 shell), or Linux. Claude Code runs here.
+2. **System packages** (install them yourself; some need an admin password):
+   - macOS: `xcode-select --install`; Python 3; `python3 -m pip install --user matplotlib`
+   - Windows: MSYS2, then `pacman -S mingw-w64-ucrt-x86_64-gcc make python git`
+   - Linux: `sudo apt install -y build-essential clang python3 python3-matplotlib zip git curl`
+3. **Node.js 22.12 or newer**, then the Playwright browser and its system libraries:
    ```bash
-   sudo apt update
-   sudo apt install -y build-essential clang libssl-dev python3 python3-matplotlib zip git curl
-   ```
-3. **Node.js 20 or newer**, then the Playwright browser and its system libraries:
-   ```bash
-   node --version          # must be 20+
+   node --version          # must be 22.12+
    npx -y playwright install --with-deps chromium
    ```
 4. **The repo.** Create an empty folder, unzip these files into it, run `git init`, make a first commit.
@@ -53,9 +52,9 @@ Continue building NexusSync. Read CLAUDE.md and docs/PROGRESS.md, check the last
 2. **Run it yourself:**
    ```bash
    make -C server asan test
-   ./scripts/crash_test.sh 50
+   python3 scripts/crash_test.py 50
    (cd web && npm test && npm run e2e)
-   ./scripts/demo_reset.sh
+   python3 scripts/demo_reset.py
    ```
 3. **Click through every screen** in a browser at your laptop's resolution and on the projector. Note anything that looks off against `DESIGN.md`.
 4. **Test on real laptops and your own router** following `docs/DEMO.md`. This is the step most likely to find problems the run could not, such as firewalls, Wi-Fi isolation, WSL networking, and real upload speeds.

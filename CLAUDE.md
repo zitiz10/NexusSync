@@ -17,7 +17,7 @@ Read this file at the start of every session. Then read the file for the area yo
 
 ## What we are building, in one paragraph
 
-NexusSync is a LAN storage server for college labs. Files are split into content-defined blocks (about 4 KB average), each block is fingerprinted with SHA-256, and a block that already exists on the server is never sent or written again. Files are stored as ordered lists of block fingerprints ("recipes") and rebuilt on download. The server is written in C on Linux and includes its own block index (extendible hashing with a buffer pool), write-ahead log, crash recovery, garbage collection, HTTP/1.1 and WebSocket layer, and authentication. Students and the lab admin use a calm, polished web interface in any browser on the same network.
+NexusSync is a LAN storage server for college labs. Files are split into content-defined blocks (about 4 KB average), each block is fingerprinted with SHA-256, and a block that already exists on the server is never sent or written again. Files are stored as ordered lists of block fingerprints ("recipes") and rebuilt on download. The server is written in portable C (Linux, macOS, and Windows) and includes its own block index (extendible hashing with a buffer pool), write-ahead log, crash recovery, garbage collection, HTTP/1.1 and WebSocket layer, and authentication. Students and the lab admin use a calm, polished web interface in any browser on the same network.
 
 ## Priorities, in order
 
@@ -33,9 +33,9 @@ NexusSync is a LAN storage server for college labs. Files are split into content
 
 ## Stack
 
-**Server (`server/`)**: C11, Linux only (Ubuntu 24.04 is the reference), gcc or clang, `make`, pthreads, OpenSSL (`libssl-dev`) for SHA-256, SHA-1 (WebSocket handshake), PBKDF2, and secure random bytes. Vendored: cJSON (MIT, single file) for parsing request JSON. No other C dependencies without asking.
+**Server (`server/`)**: C11, portable to three platforms: Linux (Ubuntu 24.04), macOS (Apple clang), and Windows (MSYS2 / MinGW-w64 gcc). Build with `make` and pthreads (winpthreads on Windows). Every OS call goes through `server/src/platform/platform.h`; no other file includes `<unistd.h>`, `<fcntl.h>`, `<sys/socket.h>`, `<windows.h>`, or `<winsock2.h>`. Crypto is in-repo in `server/src/crypto/` (SHA-256, SHA-1, HMAC-SHA256, PBKDF2, constant-time compare), validated against NIST/RFC vectors and against Python `hashlib`; secure random bytes come from the OS through the platform layer. No OpenSSL (see `docs/DECISIONS.md` D-001, D-002). Vendored: cJSON (MIT, single file) for parsing request JSON. No other C dependencies without asking.
 
-**Web (`web/`)**: Node 20+, Vite, React 18, TypeScript in strict mode, React Router. Allowed packages: `vitest` and `@playwright/test` (dev only), `hash-wasm` (SHA-256 in the browser, see SPEC §6.3), `lucide-react` (icons, 1.5 px stroke), `qrcode` (connect screen). No UI kits (no MUI, Chakra, shadcn, Tailwind, Bootstrap) and no animation libraries; components and motion are hand-built from `DESIGN.md` tokens. Nothing else without recording a strong reason in `docs/DECISIONS.md`.
+**Web (`web/`)**: Node 22.12+, Vite, React 18, TypeScript in strict mode, React Router (build tooling `@vitejs/plugin-react`, `typescript`, and `@types/react*` are implied by this stack; see D-008). Allowed packages: `vitest` and `@playwright/test` (dev only), `hash-wasm` (SHA-256 in the browser, see SPEC §6.3), `lucide-react` (icons, 1.5 px stroke), `qrcode` (connect screen). No UI kits (no MUI, Chakra, shadcn, Tailwind, Bootstrap) and no animation libraries; components and motion are hand-built from `DESIGN.md` tokens. Nothing else without recording a strong reason in `docs/DECISIONS.md`.
 
 **CLI (`cli/`)**: C11, shares the chunker and hashing code with the server.
 
@@ -54,11 +54,13 @@ nexussync/
       net/     server.c http.c ws.c router.c static.c
       api/     auth.c files.c uploads.c compare.c stats.c admin.c events.c
       util/    log.c config.c crc32.c json_out.c time.c
+      platform/ platform.h plat_posix.c plat_win32.c   (all OS calls)
+      crypto/  sha256.c sha1.c hmac.c pbkdf2.c
       main.c
     vendor/    cJSON.c cJSON.h
     tests/     unit/ integration/ fixtures/
     Makefile
-  cli/         main.c client.c  (links server/src/engine/{chunk_*,sha}.c)
+  cli/         main.c client.c  (links server/src/engine/chunk_*.c, crypto/, platform/)
   web/
     public/fonts/        Geist and Geist Mono woff2 (self-hosted)
     src/
@@ -66,7 +68,9 @@ nexussync/
       styles/tokens.css  styles/base.css
       api/ (typed client, websocket)
     index.html  vite.config.ts
-  scripts/     gen_gear.py crash_test.sh demo_reset.sh make_demo_data.py fsck_all.sh
+  scripts/     check.py gen_gear.py crash_test.py demo_reset.py make_demo_data.py fsck_all.py
+               (Python so they run unchanged on every OS)
+  .github/workflows/ci.yml   build + test on ubuntu, macos, windows
   eval/        run_eval.py  results/
   design/mockups/        screenshots of the approved mockups (added by the team)
   nexussync.conf.example
@@ -76,12 +80,15 @@ nexussync/
 
 ## Commands
 
+On Windows run these from an MSYS2 UCRT64 shell; the binary is `nexusd.exe`. Sanitizers (`asan`, `tsan`) exist on Linux and macOS only, so on Windows `make test` builds without them.
+
 ```bash
 # server
 make -C server              # release build  -> server/build/nexusd
 make -C server debug        # -O0 -g
 make -C server asan         # AddressSanitizer + UndefinedBehaviorSanitizer
-make -C server test         # unit + integration tests (runs under asan)
+make -C server tsan         # ThreadSanitizer build and tests
+make -C server test         # unit + integration tests (under asan where available)
 ./server/build/nexusd --config nexussync.conf
 ./server/build/nexusd --config nexussync.conf --init           # create data dir
 ./server/build/nexusd --config nexussync.conf --create-admin   # prompts for password
@@ -96,9 +103,10 @@ npm test          # vitest (chunker parity, reducers)
 npm run e2e       # Playwright end-to-end
 
 # tooling
+python3 scripts/check.py              # C tests + web tests in one command
 python3 scripts/gen_gear.py           # regenerates gear tables for C and TS from one seed
-./scripts/crash_test.sh 50            # 50 random kill -9 cycles, fsck after each
-./scripts/demo_reset.sh               # wipe and seed a clean demo server
+python3 scripts/crash_test.py 50      # 50 random hard kills (SIGKILL / TerminateProcess), fsck after each
+python3 scripts/demo_reset.py         # wipe and seed a clean demo server
 python3 eval/run_eval.py eval/datasets # baselines and charts into eval/results
 ```
 
@@ -136,10 +144,11 @@ The team will start you once with `PROMPT.md` and expects you to build the whole
 - On-disk structures are serialized field by field in little-endian with fixed-width integers. Never `fwrite` a C struct.
 - No variable-length arrays. Use `size_t` for sizes, `uint64_t` for offsets and LSNs.
 - Follow the lock order in `docs/SPEC.md` §9 exactly. Document any new lock there first.
+- Portability: OS calls only through `platform.h`. Use `plat_fsync_file` (never raw `fsync`: on macOS it does not flush the drive cache). Print 64-bit values with `PRIu64`. Open data files in binary mode. Paths are UTF-8 strings.
 - Logging: one structured line per event to stderr (`ts level module msg key=value`). Never log passwords, session tokens, join codes, or file contents.
 
 ## Definition of finished
 
-Your run is finished when every milestone in `docs/SPEC.md` §14 passes its acceptance checks, `./scripts/crash_test.sh 50` passes, every screen has been screenshotted and checked against `DESIGN.md`, `docs/PROGRESS.md` is fully ticked (or lists open problems honestly), and `docs/LEARNING.md` covers every module. End with a short report in `docs/PROGRESS.md`: what works, what was verified and how, known issues, and the exact commands to start the demo.
+Your run is finished when every milestone in `docs/SPEC.md` §14 passes its acceptance checks, `python3 scripts/crash_test.py 50` passes, every screen has been screenshotted and checked against `DESIGN.md`, `docs/PROGRESS.md` is fully ticked (or lists open problems honestly), and `docs/LEARNING.md` covers every module. End with a short report in `docs/PROGRESS.md`: what works, what was verified and how, known issues, and the exact commands to start the demo.
 
 After your run, the team will review the code, test on real laptops following `docs/DEMO.md`, and come back with fixes. Make that easy: clear commits, honest progress notes, no hidden shortcuts.

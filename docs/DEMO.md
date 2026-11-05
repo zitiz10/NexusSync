@@ -5,10 +5,13 @@ How to show NexusSync working on 2–3 laptops in front of examiners, what you n
 ## 1. Requirements
 
 **Server laptop (1)**
-- Linux. Ubuntu 24.04 installed natively is strongly recommended (dual boot is fine).
-- If only Windows is available: Windows 11 with WSL2 and Ubuntu 24.04, with mirrored networking enabled (see §3.2). Test this at least a week before any phase review, because WSL networking is the most likely thing to fail on the day.
+- Any of: Windows 10/11, macOS 13 or newer, or Linux (Ubuntu 24.04). `nexusd` runs natively on all three; no virtual machine or WSL is needed.
 - 8 GB RAM or more, SSD with at least 30 GB free.
-- Build tools: `build-essential`, `libssl-dev`, `python3`, `python3-matplotlib`, Node.js 20+ (only to build the web app).
+- Build tools:
+  - Windows: MSYS2 with `pacman -S mingw-w64-ucrt-x86_64-gcc make python` (run from the "MSYS2 UCRT64" shell).
+  - macOS: Xcode Command Line Tools (`xcode-select --install`) and Python 3.
+  - Linux: `build-essential python3`.
+  - All: Node.js 22.12+ (only to build the web app); `matplotlib` for the evaluation charts (`python3 -m pip install --user matplotlib`).
 - A charger. Disable sleep and screen lock during the demo.
 
 **Client laptops (1–2)**
@@ -43,29 +46,26 @@ Copy `demo-data/` to both client laptops in advance.
 
 ## 3. Setup
 
-### 3.1 Server on native Ubuntu
+### 3.1 Build and start (same on every OS)
+In a terminal (Windows: the "MSYS2 UCRT64" shell):
 ```bash
 git clone <repo> && cd nexussync
 make -C server && (cd web && npm ci && npm run build)
 cp nexussync.conf.example nexussync.conf
-sudo ufw allow 8080/tcp            # if ufw is enabled
-./scripts/demo_reset.sh            # wipes data, creates admin, riya, arjun from demo.env, starts nexusd
-ip -4 addr                          # note the LAN address, e.g. 192.168.1.20
+python3 scripts/demo_reset.py      # wipes data, creates admin, riya, arjun from demo.env, starts nexusd
 ```
-The Engine screen also lists the server's LAN addresses with QR codes.
+The Engine screen lists the server's LAN addresses with QR codes. To find the address by hand: `ipconfig` (Windows), `ipconfig getifaddr en0` (macOS), `ip -4 addr` (Linux).
 
-### 3.2 Server on Windows 11 with WSL2
-1. In `%UserProfile%\.wslconfig`:
-   ```
-   [wsl2]
-   networkingMode=mirrored
-   ```
-2. Run `wsl --shutdown`, reopen Ubuntu, then follow §3.1.
-3. Allow inbound TCP 8080 in Windows Defender Firewall if clients cannot connect.
-4. From a client, open `http://<windows-laptop-ip>:8080/api/health` to confirm.
-If this does not work reliably after an evening of trying, switch the server laptop to native Ubuntu.
+### 3.2 Let clients reach the server (firewall)
+- **Windows:** the first time `nexusd.exe` starts, Windows Defender Firewall asks whether to allow it. Tick **Private networks** and allow. If you missed the prompt, allow inbound TCP 8080 in "Windows Defender Firewall with Advanced Security". Set your router's network to *Private* in Settings → Network, otherwise Windows blocks inbound connections.
+- **macOS:** if the firewall is on, macOS asks to allow incoming connections for `nexusd` the first time. Click Allow. Otherwise check System Settings → Network → Firewall.
+- **Linux:** `sudo ufw allow 8080/tcp` if ufw is enabled.
+- From a client, open `http://<server-ip>:8080/api/health` to confirm.
 
-### 3.3 Clients
+### 3.3 Optional: WSL2 on Windows
+Only needed if the native Windows build fails on your machine. In `%UserProfile%\.wslconfig` set `[wsl2]` and `networkingMode=mirrored`, run `wsl --shutdown`, reopen Ubuntu, then follow §3.1 inside it.
+
+### 3.4 Clients
 Open `http://<server-ip>:8080` (scan the QR code from the Engine screen), sign in as `riya` or `arjun`. Keep the `demo-data` folder open in the file manager.
 
 ## 4. Demo script (about 10 minutes)
@@ -78,7 +78,7 @@ Open `http://<server-ip>:8080` (scan the QR code from the Engine screen), sign i
 | 2:45 | B | Upload `dataset_v2.csv` | A few blocks sent; becomes version 2 | Content-defined blocks: only blocks near the edit change |
 | 3:30 | Presenter | Compare versions, starts in fixed 4 KB mode, then toggle | Long peach trail in fixed mode, then almost all blue in content-defined mode; hover a block to show its partner | Why fixed-size blocks fail after an insertion, and how a rolling hash fixes it |
 | 5:00 | A | Upload `submission_v2.zip` after `submission.zip` | Mostly peach, little reuse | Honest limitation: compressed files hide repetition |
-| 5:45 | A + Engineer | Start uploading the ISO or `project_src.tar`; Engineer runs `kill -9 $(pidof nexusd)` mid-upload, then restarts | Clients show "Lost connection, retrying"; projector shows recovery with records replayed; then normal | Write-ahead log, commit point, redo recovery, no-steal buffer pool |
+| 5:45 | A + Engineer | Start uploading the ISO or `project_src.tar`; Engineer hard-kills the server mid-upload (`kill -9 $(pgrep nexusd)` on macOS/Linux, `taskkill /F /IM nexusd.exe` on Windows), then restarts | Clients show "Lost connection, retrying"; projector shows recovery with records replayed; then normal | Write-ahead log, commit point, redo recovery, no-steal buffer pool |
 | 7:00 | Engineer | `./server/build/nexusd --config nexussync.conf --fsck` | "All checks passed" with counts | Invariants I1–I3 verified on disk |
 | 7:30 | A | Retry the interrupted upload | Completes quickly; blocks sent before the crash were kept | Resuming is free because blocks are content-addressed |
 | 8:00 | B | Download `dataset_v2.csv`, run the SHA-256 command, compare with the file drawer | Hashes match | The file is rebuilt byte for byte from shared blocks |
@@ -92,16 +92,16 @@ Keep one browser tab per client laptop. Do not refresh during the crash step; th
 - **Clients cannot reach the server:** check both are on your router, ping the server IP, check the firewall, try `http://<ip>:8080/api/health`. Fallback: run the whole demo on the server laptop with two browser profiles (one per student) and the projector.
 - **Server crashes unexpectedly:** restart it. Recovery is part of the demo; say so calmly.
 - **A step fails twice:** move on and show the recorded video of that step.
-- **State gets messy:** `./scripts/demo_reset.sh` returns to a clean server in under a minute. Optionally keep a snapshot tarball of `data/` taken after the first upload to restore mid-demo.
+- **State gets messy:** `python3 scripts/demo_reset.py` returns to a clean server in under a minute. Optionally keep a snapshot tarball of `data/` taken after the first upload to restore mid-demo.
 - Record a full run-through on video the day before. Bring it on a USB drive.
 
 ## 6. Checklists
 
-**A week before:** network tested with all laptops and the router; WSL networking verified if used; demo data generated and copied; full rehearsal timed; video recorded.
+**A week before:** network tested with all laptops and the router; firewall prompt accepted on the server laptop; demo data generated and copied; full rehearsal timed; video recorded.
 
-**The day before:** fresh build from the main branch; `make -C server test` and `./scripts/crash_test.sh 20` pass; `demo_reset.sh` run; laptops charged; sleep disabled; browser zoom checked on the projector resolution.
+**The day before:** fresh build from the main branch; `make -C server test` and `python3 scripts/crash_test.py 20` pass; `demo_reset.py` run; laptops charged; sleep disabled; browser zoom checked on the projector resolution.
 
-**One hour before:** router on; server started with `demo_reset.sh`; all clients signed in; Overview on the projector; terminal open with the `kill -9` and restart commands ready; `demo-data` folders open on both clients; notifications muted on all laptops.
+**One hour before:** router on; server started with `demo_reset.py`; all clients signed in; Overview on the projector; terminal open with the `kill -9` and restart commands ready; `demo-data` folders open on both clients; notifications muted on all laptops.
 
 ## 7. What to show at each phase
 

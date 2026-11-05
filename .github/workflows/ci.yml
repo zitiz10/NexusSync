@@ -1,0 +1,67 @@
+# Builds and tests NexusSync on the three server platforms (SPEC §15).
+# Linux and macOS run the C tests under ASan + UBSan (Linux also TSan);
+# Windows builds with MSYS2 UCRT64 (MinGW-w64 gcc) without sanitizers.
+name: ci
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  server-posix:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build release with warnings as errors
+        run: make -C server WERROR=1
+      - name: nexusd --version
+        run: ./server/build/nexusd --version
+      - name: Tests under ASan + UBSan
+        run: make -C server test WERROR=1
+      - name: Tests under TSan
+        if: runner.os == 'Linux'
+        run: make -C server tsan
+
+  server-windows:
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: msys2 {0}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: msys2/setup-msys2@v2
+        with:
+          msystem: UCRT64
+          update: true
+          install: make mingw-w64-ucrt-x86_64-gcc mingw-w64-ucrt-x86_64-python
+      - name: Build release
+        run: make -C server CC=gcc
+      - name: nexusd --version
+        run: ./server/build/nexusd.exe --version
+      - name: Tests (no sanitizers on MinGW)
+        run: make -C server test CC=gcc
+      - name: Upload nexusd.exe
+        uses: actions/upload-artifact@v4
+        with:
+          name: nexusd-windows-x64
+          path: server/build/nexusd.exe
+
+  web:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - run: npm ci
+        working-directory: web
+      - run: npm test
+        working-directory: web
+      - run: npm run build
+        working-directory: web
