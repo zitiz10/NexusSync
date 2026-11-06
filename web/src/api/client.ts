@@ -7,7 +7,19 @@
 //   "network" when the server could not be reached.
 // - A 401 on any call except sign-in means the session ended: listeners
 //   are told so the app can return to the sign-in screen (DESIGN §8.8).
-import type { ErrorBody, FileItem, Health, User } from './types';
+import type {
+  BlockMap,
+  ChunksReply,
+  CommitReply,
+  ErrorBody,
+  FileDetail,
+  FileItem,
+  FileTiles,
+  Health,
+  Stats,
+  UploadCreated,
+  User,
+} from './types';
 
 export class ApiError extends Error {
   readonly status: number;
@@ -48,6 +60,8 @@ export function onServerResponse(fn: ResponseListener): () => void {
 interface RequestOptions {
   method?: 'GET' | 'POST' | 'PATCH' | 'DELETE';
   json?: unknown;
+  /** A binary body (upload manifest and chunks), sent as octet-stream. */
+  binary?: Uint8Array;
   signal?: AbortSignal;
   /** Do not treat 401 as "session ended" (sign-in itself, /api/me probe). */
   quiet401?: boolean;
@@ -59,10 +73,13 @@ export async function request<T>(path: string, opts: RequestOptions = {}): Promi
   const method = opts.method ?? 'GET';
   const headers: Record<string, string> = { Accept: 'application/json' };
   if (MUTATING.has(method)) headers['X-NexusSync'] = '1';
-  let body: string | undefined;
+  let body: BodyInit | undefined;
   if (opts.json !== undefined) {
     headers['Content-Type'] = 'application/json';
     body = JSON.stringify(opts.json);
+  } else if (opts.binary !== undefined) {
+    headers['Content-Type'] = 'application/octet-stream';
+    body = opts.binary as Uint8Array<ArrayBuffer>;
   }
   let res: Response;
   try {
@@ -106,6 +123,41 @@ export const api = {
   join: (input: { username: string; displayName: string; password: string; joinCode: string }) =>
     request<User>('/api/auth/join', { method: 'POST', json: input, quiet401: true }),
   logout: () => request<void>('/api/auth/logout', { method: 'POST', quiet401: true }),
-  files: (query = '') =>
-    request<{ items: FileItem[]; nextCursor: string | null }>(`/api/files${query}`),
+  files: (query = '', signal?: AbortSignal) =>
+    request<{ items: FileItem[]; nextCursor: string | null }>(`/api/files${query}`, signal ? { signal } : {}),
+  file: (id: number) => request<FileDetail>(`/api/files/${id}`),
+  setShared: (id: number, shared: boolean) =>
+    request<FileItem>(`/api/files/${id}`, { method: 'PATCH', json: { shared } }),
+  deleteFile: (id: number) => request<void>(`/api/files/${id}`, { method: 'DELETE' }),
+  /** A plain link: the browser downloads with the session cookie. */
+  contentUrl: (id: number) => `/api/files/${id}/content`,
+  stats: () => request<Stats>('/api/stats'),
+  blockmap: () => request<BlockMap>('/api/blockmap?tiles=384'),
+  fileTiles: (id: number, signal?: AbortSignal) =>
+    request<FileTiles>(`/api/blockmap?tiles=384&file=${id}`, signal ? { signal } : {}),
+
+  // Uploads (SPEC §12): create, manifest pages, chunks, commit, cancel.
+  uploadCreate: (input: {
+    name: string;
+    size: number;
+    sha256: string;
+    chunker: 'cdc';
+    chunkCount: number;
+    versionOf?: number | null;
+  }) => request<UploadCreated>('/api/uploads', { method: 'POST', json: input }),
+  uploadManifest: (id: string, page: number, body: Uint8Array, signal?: AbortSignal) =>
+    request<{ need: number[] }>(`/api/uploads/${id}/manifest?page=${page}`, {
+      method: 'POST',
+      binary: body,
+      ...(signal ? { signal } : {}),
+    }),
+  uploadChunks: (id: string, body: Uint8Array, signal?: AbortSignal) =>
+    request<ChunksReply>(`/api/uploads/${id}/chunks`, {
+      method: 'POST',
+      binary: body,
+      ...(signal ? { signal } : {}),
+    }),
+  uploadCommit: (id: string, signal?: AbortSignal) =>
+    request<CommitReply>(`/api/uploads/${id}/commit`, { method: 'POST', ...(signal ? { signal } : {}) }),
+  uploadCancel: (id: string) => request<void>(`/api/uploads/${id}`, { method: 'DELETE' }),
 };

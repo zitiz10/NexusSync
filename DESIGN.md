@@ -114,6 +114,8 @@ Put these in `web/src/styles/tokens.css`. Components reference tokens only.
 - `--fs-wordmark` 19, `--r-round` 50% (avatar and status dot only), `--t-pulse` 1200 ms, `--t-spin` 800 ms, `--offline-dim` 0.6;
 - a dark `--shadow-float` with deeper black, since the light one disappears on `--bg` dark.
 
+**Tokens added in M9** (`web/src/styles/tokens.css`): `--tray-w` 420, `--drawer-w` 480, `--bar-h` 6 and `--r-bar` 3 (dedup bar), `--r-row` 12 (row hover), `--tile-gap` 4 (2 on phones), `--tile-outline` 1.5 and `--tile-dim` 0.22 (linked hover), the §9 timings as `--t-tile-enter` 1100 ms, `--stagger-col` 26 ms, `--stagger-row` 38 ms, `--t-tile-hover` 380 ms, `--t-tile-pulse` 600 ms, `--t-toast` 6 s, and layout widths `--field-w` 480, `--side-w` 360, `--col-size`, `--col-date`, `--col-bar`, `--col-actions`.
+
 Light mode is the default and the projector mode. Dark mode follows the system unless the user picks a theme in the user menu (stored in `localStorage`). Copy the dark values into the `prefers-color-scheme` block when implementing.
 
 Contrast floor: body and meta text at least 4.5:1 against the surface it sits on; graphical elements that carry meaning (tiles, bars, blocks, focus rings) at least 3:1 against their neighbors.
@@ -248,6 +250,8 @@ Students see their own and lab-shared files in Recent uploads; admins see everyo
 
 **Headline.** "{logical} uploaded. {physical} on disk." built from `/api/stats`. Lead paragraph names writes skipped (logical − physical) and network bytes saved (both are real and different).
 
+**Headline size beside the field (M9).** At desktop widths the text column next to a 480 px field is about 630 px, and `--fs-display` (92 px at 1440) broke "9.7 MB uploaded." over two lines. In the two-column hero the display size is therefore `min(--fs-display, 10cqi)` of its column (about 63 px at 1440), so each sentence stays on one line as in the mockup. Stacked layouts (compact, phone) keep `--fs-display`. Numbers and units are joined by a no-break space everywhere ("5.7 MB" never wraps).
+
 **Block field.** 32 × 12 = 384 square tiles, 4 px gap, `--r-tile`. Each tile is an equal slice of the physical store in storage order; its shade is the mean share count of the blocks in that slice: 1 → `--lvl-1`, 2 → `--lvl-2`, 3–4 → `--lvl-3`, 5+ → `--lvl-4`. Caption states the tile size from real data ("Each tile is about 160 MB of stored blocks"). Legend below the caption.
 
 **Linked hover (fixed per critique).** Hovering a row in Recent uploads requests `/api/blockmap?file=ID`. Tiles containing that file's blocks keep their color and gain an inset 1.5 px `--ink` outline; every other tile drops to 22% opacity. Transition 380 ms. The caption switches to one line, for example "Tiles holding blocks of CV_dataset_train.csv. All new data, each block written once." Leaving the row restores everything. This must be clearly visible for files whose blocks are all `--lvl-1`.
@@ -273,6 +277,7 @@ name  v2                      owner*   size     dedup bar + note          date  
 - Clicking a row opens the **file drawer**: name, versions list (each with date and size, any two selectable → opens Compare), size, uploaded by and when, blocks total, blocks unique to this file, blocks shared with other files, network bytes sent at upload, chunking method, whole-file SHA-256 in Geist Mono with a copy button (used in the demo to verify downloads), Download and Delete buttons.
 - **Delete** asks inline in the drawer: "Delete DBMS_notes.csv? Blocks shared with other files are kept." Confirm sends nothing yet; a toast "Deleted DBMS_notes.csv. Undo" appears and the request is sent after 6 s unless Undo is pressed.
 - Empty state: "No files yet. Drop a file anywhere on this page to upload it." Search with no results: "No files match "{query}"."
+- **Show (M9):** three choices, All | Mine | Shared with lab. "All" is what an admin needs (every file) and what a student usually wants (theirs plus shared). The two in the sketch alone could not show both at once.
 
 ### 8.4 Upload flow and tray (new; fixes critique P1)
 
@@ -288,7 +293,8 @@ Failure states, each with a plain reason and one action:
 - Lost connection: "Connection lost. Retry" (retry resumes; blocks already sent are not resent).
 - Hash mismatch: "The server rejected 1 block that did not match its fingerprint. Retry".
 - Disk full: "The server is out of space. Ask the lab admin."
-- Session expired: "Your session ended. Sign in again" (keeps the file selected).
+- Session expired: the app returns to sign-in with "Your session ended. Sign in again" (§8.8). The upload keeps its file, and once the same person is signed in again, the tray row reads "Your session ended before the upload finished." with Retry (M9). If a different person signs in on that PC, the upload is dropped, so it can never go into the wrong account.
+- When every upload has finished, the tray folds to its header after 4 s and the files settle into Recent uploads. It can be closed only when nothing has failed.
 - Cancel is always available until Verifying.
 
 ### 8.5 Compare versions

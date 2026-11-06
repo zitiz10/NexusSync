@@ -479,8 +479,10 @@ void nx_hub_publish(nx_hub *h, const char *type, const char *data_json, nx_audie
     bool is_stats = strcmp(type, "stats.updated") == 0;
     pthread_mutex_lock(&h->mu);
     for (client *c = h->clients; c; c = c->next) {
-        bool to = aud.kind == NX_AUD_ALL || c->admin ||
-                  (aud.kind == NX_AUD_USER && c->user_id == aud.user_id);
+        bool to = aud.kind == NX_AUD_OTHERS
+                      ? !c->admin && c->user_id != aud.user_id
+                      : aud.kind == NX_AUD_ALL || c->admin ||
+                            (aud.kind == NX_AUD_USER && c->user_id == aud.user_id);
         if (!to || atomic_load(&c->dead))
             continue;
         size_t len;

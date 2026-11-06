@@ -199,4 +199,89 @@ static inline void fx_stop(fx *f)
     nx_app_destroy(f->app);
 }
 
+/* ---- WebSocket client (tests only) ---------------------------------------- */
+
+static inline plat_sock ws_open(fx *f, const char *cookie_hdr, const char *extra, resp *r)
+{
+    plat_sock s = dial(f->port);
+    if (s == PLAT_SOCK_INVALID)
+        return s;
+    char h[1024];
+    int n = snprintf(h, sizeof h,
+                     "GET /ws HTTP/1.1\r\nHost: 127.0.0.1\r\nUpgrade: websocket\r\n"
+                     "Connection: keep-alive, Upgrade\r\nSec-WebSocket-Version: 13\r\n"
+                     "Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n%s%s\r\n",
+                     cookie_hdr ? cookie_hdr : "", extra ? extra : "");
+    if (plat_send_all(s, h, (size_t)n) != 0 || read_resp(s, r) != 0) {
+        plat_sock_close(s);
+        return PLAT_SOCK_INVALID;
+    }
+    return s;
+}
+
+/* Reads one server frame (unmasked). Returns the opcode or -1. */
+static inline int ws_read(plat_sock s, char *payload, size_t cap, size_t *len)
+{
+    uint8_t h[10];
+    if (plat_recv(s, h, 2) != 2)
+        return -1;
+    if (h[1] & 0x80)
+        return -1; /* servers never mask */
+    uint64_t n = h[1] & 0x7F;
+    if (n == 126) {
+        if (plat_recv(s, h + 2, 2) != 2)
+            return -1;
+        n = ((uint64_t)h[2] << 8) | h[3];
+    }
+    if (n >= cap)
+        return -1;
+    size_t got = 0;
+    while (got < n) {
+        int64_t k = plat_recv(s, payload + got, (size_t)n - got);
+        if (k <= 0)
+            return -1;
+        got += (size_t)k;
+    }
+    payload[n] = '\0';
+    *len = (size_t)n;
+    return h[0] & 0x0F;
+}
+
+static inline int ws_send(plat_sock s, uint8_t opcode, const char *data, size_t n)
+{
+    uint8_t f[200];
+    uint8_t mask[4] = {0x11, 0x22, 0x33, 0x44};
+    f[0] = (uint8_t)(0x80 | opcode);
+    f[1] = (uint8_t)(0x80 | n);
+    memcpy(f + 2, mask, 4);
+    for (size_t i = 0; i < n; i++)
+        f[6 + i] = (uint8_t)data[i] ^ mask[i & 3];
+    return plat_send_all(s, f, 6 + n);
+}
+
+/* Reads frames until a text frame containing needle (skips pings and
+ * other events, at most 200 frames). The matching payload is copied to
+ * out when given. */
+static inline bool ws_wait_for_copy(plat_sock s, const char *needle, char *out, size_t cap)
+{
+    static char buf[16384];
+    size_t len;
+    for (int i = 0; i < 200; i++) {
+        int op = ws_read(s, buf, sizeof buf, &len);
+        if (op < 0)
+            return false;
+        if (op == NX_WS_TEXT && strstr(buf, needle)) {
+            if (out && cap)
+                snprintf(out, cap, "%s", buf);
+            return true;
+        }
+    }
+    return false;
+}
+
+static inline bool ws_wait_for(plat_sock s, const char *needle)
+{
+    return ws_wait_for_copy(s, needle, NULL, 0);
+}
+
 #endif

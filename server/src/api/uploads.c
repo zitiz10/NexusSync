@@ -3,6 +3,7 @@
 
 #include "api/auth.h"
 #include "api/files.h"
+#include "api/stats.h"
 #include "cJSON.h"
 #include "crypto/sha256.h"
 #include "engine/chunk.h"
@@ -44,11 +45,25 @@ typedef struct up {
     bool dead;
 } up;
 
+/* Bytes that crossed the network in sessions that ended without a commit
+ * (cancelled, expired, failed), per owner and file hash. A later session
+ * for the same file takes them over, so a resumed upload still reports
+ * every byte it really sent (DECISIONS D-041). Small and in memory: a
+ * restart forgets them, and then a resumed upload under-reports. */
+#define NX_CARRY_SLOTS 64u
+typedef struct {
+    uint32_t owner;
+    uint8_t sha[32];
+    uint64_t bytes;
+} carry_slot;
+
 struct nx_uploads {
     pthread_mutex_t mu;
     up *list;
     size_t count;
     uint64_t chunk_total; /* declared chunks over all sessions */
+    carry_slot carry[NX_CARRY_SLOTS];
+    unsigned carry_next; /* ring position for the next new slot */
 };
 
 int nx_uploads_create(nx_uploads **out)
@@ -86,8 +101,60 @@ void nx_uploads_destroy(nx_uploads *u)
 }
 
 /* Caller holds the table lock. */
-static void unlink_up(nx_uploads *u, up *s)
+static void carry_put(nx_uploads *u, uint32_t owner, const uint8_t sha[32], uint64_t bytes)
 {
+    if (bytes == 0)
+        return;
+    for (unsigned i = 0; i < NX_CARRY_SLOTS; i++) {
+        carry_slot *c = &u->carry[i];
+        if (c->bytes && c->owner == owner && memcmp(c->sha, sha, 32) == 0) {
+            c->bytes += bytes;
+            return;
+        }
+    }
+    carry_slot *c = &u->carry[u->carry_next++ % NX_CARRY_SLOTS]; /* oldest goes */
+    c->owner = owner;
+    memcpy(c->sha, sha, 32);
+    c->bytes = bytes;
+}
+
+/* Caller holds the table lock. Bytes already sent for this owner's file:
+ * from ended sessions, and from open ones (another tab, or a session the
+ * client gave up on without cancelling). Open sessions keep running; only
+ * their count moves here, so nothing is counted twice. */
+static uint64_t carry_take(nx_uploads *u, uint32_t owner, const uint8_t sha[32])
+{
+    uint64_t n = 0;
+    for (unsigned i = 0; i < NX_CARRY_SLOTS; i++) {
+        carry_slot *c = &u->carry[i];
+        if (c->bytes && c->owner == owner && memcmp(c->sha, sha, 32) == 0) {
+            n += c->bytes;
+            c->bytes = 0;
+        }
+    }
+    for (up *o = u->list; o; o = o->next) {
+        if (o->owner != owner || memcmp(o->sha, sha, 32) != 0)
+            continue;
+        pthread_mutex_lock(&o->mu);
+        if (!o->committing) {
+            n += o->bytes_sent;
+            o->bytes_sent = 0;
+        }
+        pthread_mutex_unlock(&o->mu);
+    }
+    return n;
+}
+
+/* Caller holds the table lock. `carry`: the session ends without a commit,
+ * so its sent bytes are kept for a later session of the same file. */
+static void unlink_up(nx_uploads *u, up *s, bool carry)
+{
+    if (carry) {
+        pthread_mutex_lock(&s->mu);
+        uint64_t sent = s->bytes_sent;
+        pthread_mutex_unlock(&s->mu);
+        carry_put(u, s->owner, s->sha, sent);
+    }
     for (up **pp = &u->list; *pp; pp = &(*pp)->next)
         if (*pp == s) {
             *pp = s->next;
@@ -109,7 +176,7 @@ size_t nx_uploads_expire(nx_uploads *u, uint32_t ttl_s)
     while (s) {
         up *next = s->next;
         if (s->refs == 0 && now - s->last_ms > (uint64_t)ttl_s * 1000u) {
-            unlink_up(u, s);
+            unlink_up(u, s, true);
             n++;
         }
         s = next;
@@ -227,7 +294,11 @@ static void emit(nx_app *app, uint32_t owner, const char *type, nx_json *data)
         nx_hub_publish(app->hub, type, data->buf, (nx_audience){NX_AUD_USER, owner});
 }
 
-static void emit_progress(nx_app *app, const up *s, const char *phase, uint64_t done)
+/* upload.progress to the owner (and admins). When blocks were stored,
+ * everyone else gets an anonymous copy with only the tiles they landed in,
+ * so every open Overview pulses (SPEC §12). */
+static void emit_progress(nx_app *app, const up *s, const char *phase, uint64_t done,
+                          const uint32_t *tiles, size_t ntiles)
 {
     nx_json j;
     nx_json_init(&j);
@@ -239,10 +310,29 @@ static void emit_progress(nx_app *app, const up *s, const char *phase, uint64_t 
     nx_json_key_u64(&j, "total", s->size);
     nx_json_key(&j, "newTiles");
     nx_json_arr_open(&j);
+    for (size_t k = 0; k < ntiles; k++)
+        nx_json_u64(&j, tiles[k]);
     nx_json_arr_close(&j);
     nx_json_obj_close(&j);
     emit(app, s->owner, "upload.progress", &j);
     nx_json_free(&j);
+    if (ntiles == 0)
+        return;
+    nx_json a;
+    nx_json_init(&a);
+    nx_json_obj_open(&a);
+    nx_json_key(&a, "uploadId");
+    nx_json_null(&a);
+    nx_json_key_str(&a, "phase", phase);
+    nx_json_key(&a, "newTiles");
+    nx_json_arr_open(&a);
+    for (size_t k = 0; k < ntiles; k++)
+        nx_json_u64(&a, tiles[k]);
+    nx_json_arr_close(&a);
+    nx_json_obj_close(&a);
+    if (!a.oom)
+        nx_hub_publish(app->hub, "upload.progress", a.buf, (nx_audience){NX_AUD_OTHERS, s->owner});
+    nx_json_free(&a);
 }
 
 /* ===== POST /api/uploads ========================================================== */
@@ -346,6 +436,7 @@ void nx_h_upload_create(nx_ctx *c)
     else if (u->chunk_total + count > NX_UPLOAD_CHUNK_BUDGET)
         status = 503;
     else {
+        s->bytes_sent = carry_take(u, s->owner, s->sha); /* s is not visible yet */
         s->next = u->list;
         u->list = s;
         u->count++;
@@ -371,7 +462,7 @@ void nx_h_upload_create(nx_ctx *c)
     nx_json_free(&j);
     LOG_INFO("upload", "started upload=%.8s user_id=%" PRIu32 " size=%" PRIu64 " chunks=%" PRIu64,
              s->id, s->owner, size, count);
-    emit_progress(app, s, "manifest", 0);
+    emit_progress(app, s, "manifest", 0, NULL, 0);
 }
 
 /* ===== POST /api/uploads/{uid}/manifest?page=N ===================================== */
@@ -598,6 +689,11 @@ void nx_h_upload_chunks(nx_ctx *c)
         goto out;
     }
     uint64_t done;
+    /* Table lock first (lock order), so the byte count and the session's
+     * end cannot interleave: a client that gave up on this request may
+     * have cancelled the session while we stored. Then the bytes go to the
+     * carry-over for its next session (D-041), not into a dead session. */
+    pthread_mutex_lock(&app->uploads->mu);
     pthread_mutex_lock(&s->mu);
     for (size_t k = 0; k < nacc; k++) {
         uint64_t *v = nx_hmap32_get(&s->first, blocks[k].hash);
@@ -608,7 +704,11 @@ void nx_h_upload_chunks(nx_ctx *c)
     s->bytes_sent += sent;
     s->new_chunks += (uint32_t)sr.stored;
     done = s->bytes_sent;
+    bool ended = s->dead;
     pthread_mutex_unlock(&s->mu);
+    if (ended)
+        carry_put(app->uploads, s->owner, s->sha, sent);
+    pthread_mutex_unlock(&app->uploads->mu);
     nx_json j;
     nx_json_init(&j);
     nx_json_obj_open(&j);
@@ -622,7 +722,13 @@ void nx_h_upload_chunks(nx_ctx *c)
     nx_json_obj_close(&j);
     nx_reply_json(c, 200, &j, NULL);
     nx_json_free(&j);
-    emit_progress(app, s, "sending", done);
+    /* New blocks were appended at the end of the store: the tiles they
+     * landed in (D-040). */
+    uint32_t tiles[NX_BLOCKMAP_TILES];
+    size_t nt = sr.bytes_written ? nx_stats_tail_tiles(app->engine, sr.bytes_written, tiles,
+                                                       NX_BLOCKMAP_TILES)
+                                 : 0;
+    emit_progress(app, s, "sending", done, tiles, nt);
 out:
     nx_json_free(&rej);
     free(blocks);
@@ -632,11 +738,11 @@ out:
 
 /* ===== POST /api/uploads/{uid}/commit ============================================== */
 
-static void remove_session(nx_uploads *u, up *s)
+static void remove_session(nx_uploads *u, up *s, bool carry)
 {
     pthread_mutex_lock(&u->mu);
     if (!s->dead)
-        unlink_up(u, s);
+        unlink_up(u, s, carry);
     pthread_mutex_unlock(&u->mu);
 }
 
@@ -663,7 +769,7 @@ void nx_h_upload_commit(nx_ctx *c)
         release(app->uploads, s);
         return;
     }
-    emit_progress(app, s, "committing", bytes_sent);
+    emit_progress(app, s, "committing", bytes_sent, NULL, 0);
     /* The manifest no longer changes (all pages done), so s->chunks can be
      * read without the lock. */
     nx_commit_meta m = {.owner_id = s->owner,
@@ -715,7 +821,7 @@ void nx_h_upload_commit(nx_ctx *c)
         nx_reply_error(c, status, code, "The file could not be committed.");
         if (rc == NX_ENGINE_BAD_HASH) {
             /* The declared file is wrong; this session cannot succeed. */
-            remove_session(app->uploads, s);
+            remove_session(app->uploads, s, true);
         } else {
             pthread_mutex_lock(&s->mu);
             s->committing = false;
@@ -755,7 +861,7 @@ void nx_h_upload_commit(nx_ctx *c)
     emit(app, s->owner, "upload.committed", &ev);
     nx_json_free(&ev);
     nx_json_free(&j);
-    remove_session(app->uploads, s);
+    remove_session(app->uploads, s, false);
     release(app->uploads, s);
 }
 
@@ -778,7 +884,7 @@ void nx_h_upload_cancel(nx_ctx *c)
     nx_json_obj_close(&j);
     emit(app, s->owner, "upload.failed", &j);
     nx_json_free(&j);
-    remove_session(app->uploads, s);
+    remove_session(app->uploads, s, true);
     release(app->uploads, s);
     nx_reply_empty(c, 204, NULL);
 }

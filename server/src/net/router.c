@@ -3,6 +3,7 @@
 
 #include "api/auth.h"
 #include "api/files.h"
+#include "api/stats.h"
 #include "api/uploads.h"
 #include "nexus_version.h"
 #include "net/static.h"
@@ -238,6 +239,8 @@ static const route ROUTES[] = {
     {"GET", "/api/admin/join-code", nx_h_admin_join_code, R_ADMIN},
     {"POST", "/api/admin/join-code/rotate", nx_h_admin_join_code_rotate, R_ADMIN},
     {"POST", "/api/admin/checkpoint", h_admin_checkpoint, R_ADMIN},
+    {"GET", "/api/stats", nx_h_stats, R_AUTH},
+    {"GET", "/api/blockmap", nx_h_blockmap, R_AUTH},
     {"GET", "/api/files", nx_h_files_list, R_AUTH},
     {"GET", "/api/files/{id}", nx_h_file_get, R_AUTH},
     {"PATCH", "/api/files/{id}", nx_h_file_patch, R_AUTH},

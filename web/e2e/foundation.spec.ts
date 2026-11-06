@@ -58,7 +58,7 @@ for (const size of SIZES) {
     test('shell for the admin', async ({ page }) => {
       await signIn(page, 'admin');
       await waitLive(page);
-      await expect(page.getByRole('link', { name: 'Engine' })).toBeVisible();
+      await expect(page.getByRole('link', { name: 'Engine', exact: true })).toBeVisible();
       await expect(page.getByRole('link', { name: 'Overview', exact: true })).toHaveAttribute('aria-current', 'page');
       await shot(page, `shell-admin-${size.name}`);
       await page.getByRole('button', { name: /account menu/ }).click();
@@ -73,11 +73,11 @@ test.describe('behaviour', () => {
 
   test('a student sees no admin pages', async ({ page }) => {
     await signIn(page, 'student');
-    await expect(page.getByRole('link', { name: 'Engine' })).toHaveCount(0);
-    await expect(page.getByRole('link', { name: 'Users' })).toHaveCount(0);
+    await expect(page.getByRole('link', { name: 'Engine', exact: true })).toHaveCount(0);
+    await expect(page.getByRole('link', { name: 'Users', exact: true })).toHaveCount(0);
     await page.goto('/engine');
     await expect(page).toHaveURL(/\/$/); /* sent back to Overview */
-    await page.getByRole('link', { name: 'Files' }).click();
+    await page.getByRole('link', { name: 'Files', exact: true }).click();
     await expect(page.getByRole('heading', { name: 'Files' })).toBeVisible();
     await expect(page).toHaveTitle('Files · NexusSync');
   });

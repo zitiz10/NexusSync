@@ -68,6 +68,7 @@ struct nx_engine {
     _Atomic uint64_t last_lsn; /* copy of stable_lsn for readers of stats */
     _Atomic uint64_t logical, physical, unique_blocks, saved;
     _Atomic uint64_t checkpoints, last_ckpt_pages, last_ckpt_ms, ckpt_lsn;
+    _Atomic uint64_t last_ckpt_at; /* unix ms of the last checkpoint this run (0: none yet) */
 };
 
 void nx_engine_config_defaults(nx_engine_config *cfg)
@@ -314,6 +315,7 @@ static int checkpoint_locked(nx_engine *e, uint64_t lsn)
         atomic_store(&e->last_ckpt_pages, b.n);
         atomic_store(&e->last_ckpt_ms, ms);
         atomic_store(&e->ckpt_lsn, lsn);
+        atomic_store(&e->last_ckpt_at, plat_now_unix_ms());
         LOG_DEBUG("engine", "checkpoint lsn=%" PRIu64 " pages=%zu ms=%" PRIu64, lsn, b.n, ms);
     }
 out:
@@ -1543,10 +1545,97 @@ void nx_engine_get_stats(nx_engine *e, nx_engine_stats *out)
     out->checkpoints = atomic_load(&e->checkpoints);
     out->last_checkpoint_pages = atomic_load(&e->last_ckpt_pages);
     out->last_checkpoint_ms = atomic_load(&e->last_ckpt_ms);
+    out->last_checkpoint_at_ms = atomic_load(&e->last_ckpt_at);
     nx_wal_stats ws;
     nx_wal_get_stats(e->wal, &ws);
     out->wal_bytes = ws.bytes;
     out->wal_segments = ws.segments;
     nx_bufpool_get_stats(e->bp, &out->pool);
     nx_exthash_get_stats(e->ix, &out->index);
+}
+
+/* ===== storage layout (block map, container stats) =========================================== */
+
+typedef struct {
+    nx_block_span *v;
+    size_t n, cap;
+} span_vec;
+
+static int collect_span(const nx_index_entry *ent, void *ctx)
+{
+    span_vec *sv = ctx;
+    if (sv->n == sv->cap) {
+        size_t cap = sv->cap ? sv->cap * 2 : 1024;
+        nx_block_span *nv = realloc(sv->v, cap * sizeof *nv);
+        if (!nv)
+            return -1;
+        sv->v = nv;
+        sv->cap = cap;
+    }
+    sv->v[sv->n++] = (nx_block_span){ent->container_id, ent->offset, ent->len, ent->refcount};
+    return 0;
+}
+
+static int span_cmp(const void *pa, const void *pb)
+{
+    const nx_block_span *a = pa, *b = pb;
+    if (a->container_id != b->container_id)
+        return a->container_id < b->container_id ? -1 : 1;
+    return a->offset < b->offset ? -1 : a->offset > b->offset;
+}
+
+int nx_engine_block_spans(nx_engine *e, nx_block_span **out, size_t *count)
+{
+    *out = NULL;
+    *count = 0;
+    for (int attempt = 0; attempt < MAX_RETRIES; attempt++) {
+        span_vec sv = {0};
+        nx_exthash_lock_shared(e->ix);
+        int rc = nx_exthash_for_each(e->ix, collect_span, &sv);
+        nx_exthash_unlock(e->ix);
+        if (rc == NX_BP_FULL) {
+            /* Every frame is dirty (no-steal): checkpoint, then walk again. */
+            free(sv.v);
+            if (reader_checkpoint(e, false) != 0)
+                return -1;
+            continue;
+        }
+        if (rc != 0) {
+            free(sv.v);
+            return -1;
+        }
+        if (sv.n > 1)
+            qsort(sv.v, sv.n, sizeof *sv.v, span_cmp);
+        *out = sv.v;
+        *count = sv.n;
+        return 0;
+    }
+    return -1;
+}
+
+int nx_engine_containers(nx_engine *e, nx_container_info **out, size_t *count)
+{
+    *out = NULL;
+    *count = 0;
+    uint32_t *ids;
+    size_t n;
+    if (nx_containers_list(e->ct, &ids, &n) != 0)
+        return -1;
+    nx_container_info *v = n ? malloc(n * sizeof *v) : NULL;
+    if (n && !v) {
+        free(ids);
+        return -1;
+    }
+    size_t k = 0;
+    for (size_t i = 0; i < n; i++) {
+        uint64_t size;
+        /* A container dropped by compaction between list and stat is skipped. */
+        if (nx_containers_file_size(e->ct, ids[i], &size) != 0)
+            continue;
+        v[k++] = (nx_container_info){ids[i], size};
+    }
+    free(ids);
+    *out = v;
+    *count = k;
+    return 0;
 }

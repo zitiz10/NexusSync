@@ -500,3 +500,47 @@ Anything in localStorage can be read by any script that runs on the page. An Htt
 - How is dark mode implemented? *(The same token names get different values under `prefers-color-scheme: dark` or `data-theme="dark"`; components never change.)*
 - Why does "Sign out" refuse to work while the server is unreachable? *(The session cookie is HttpOnly, so page scripts cannot delete it. Only the server can end the session. A browser-only sign-out would leave the next person at a shared lab PC signed in.)*
 
+
+## M9 — Overview, Files, and the upload tray
+
+### What it does
+- **`GET /api/stats`** (`server/src/api/stats.c`): how much was uploaded (logical bytes), how much is on disk (physical bytes), writes skipped, network bytes saved, and, for the admin, engine internals (WAL, index, containers). Students get the same global numbers plus `mine`, their own share.
+- **`GET /api/blockmap`**: the physical store cut into 384 equal slices ("tiles") in storage order. Each tile gets a shade 1–4 from how many files share its blocks. With `?file=ID` it answers which tiles hold that file's blocks; that drives the linked hover on the Overview.
+- **The upload engine in the browser** (`web/src/engine/`): a Web Worker reads the file in 8 MB windows, cuts it into the same content-defined blocks as the server (parity-tested since M2), and hashes each block and the whole file. `upload.ts` then runs the protocol: create a session, send the manifest, send only the blocks the server says it needs (three requests at a time), commit.
+- **Screens:** the Overview (headline, block field, recent uploads, engine summary or "Your storage"), Files (search, sort, scope, paging, a details drawer, sharing, delete with undo), and the upload tray with its phases: Reading → Checking → Sending → Verifying → Done.
+
+### Why it is designed this way
+- **The browser does the hashing, the server checks it.** Fingerprinting in the browser is what lets an identical file send 0 bytes. The server still re-hashes every block it receives and the whole file at commit, so a lying or broken client cannot corrupt anything (SPEC §13).
+- **A Web Worker,** so a 1 GB file does not freeze the page: the main thread only draws progress.
+- **Live tiles without an index walk.** Containers only grow at the end, so blocks stored a moment ago are the last bytes of the store. The tiles they landed in are simply the last `bytes_written` bytes. The test checks that this equals the file's real tiles (D-040).
+- **The block map is cached.** Sorting the whole index into storage order costs a full walk, so it is rebuilt at most every 2 s, except when an answer must be fresh (a file's own tiles right after its upload).
+- **Delete with undo sends nothing until the undo window is over.** Undo then never has to restore anything on the server; the DELETE goes out when the 6 s toast expires.
+- **Honest numbers, even after a resume.** A retried upload sends only the missing blocks. Without care the server would then claim the first session's bytes were "never sent", but they were. The server keeps the sent-byte count of sessions that end without a commit and hands it to the next session for the same file (D-041). The browser test found this.
+
+### OS and DBMS concepts
+- **Content addressing and deduplication** made visible: the same block hash means the same bytes, stored once.
+- **Storage order and physical layout:** the block map is literally the container files laid end to end.
+- **Concurrency in the browser:** a worker thread, three parallel requests, and cancellation with AbortController. The first failure stops the other workers, so nothing changes after "failed" is shown. A unit test caught that bug.
+- **Race conditions on the server:** a chunk request can finish after its session was cancelled. The byte count and the session's end are therefore updated under the same lock, in the documented lock order.
+
+### Testing
+- C: `test_stats_and_blockmap` (levels after one upload and after an identical copy; a second user's file maps to the last 96 tiles, exactly the tiles its live event named; private files 404; anonymous events for other students), plus resume and cancel accounting in `test_dedup_versions_resume`. Run under ASan and ThreadSanitizer.
+- Web unit tests: fingerprint parity at three window sizes, the manifest and chunk wire formats, batching limits, and the upload job against a fake server (resume, rejected blocks, 409 retry, every failure kind, cancel). Plus every sentence the tray can show.
+- Playwright (`web/e2e/m9.spec.ts`), against the real server: every state at three sizes. A real connection drop with resume; a corrupted chunk the real server rejects; a session ended from another tab; delete with undo; the SHA-256 in the drawer equals the downloaded file's hash; a second browser sees tiles pulse when someone else uploads.
+
+### Files to read
+`server/src/api/stats.c`, `web/src/engine/upload.ts`, `web/src/engine/fingerprint.ts`, `web/src/app/uploads.tsx`, `web/src/screens/Overview.tsx`, `web/src/screens/Files.tsx`.
+
+### Likely examiner questions
+
+**Q1. "How does the browser know which blocks to send?"**
+It cuts the file into blocks and hashes each one in a Web Worker, then sends the list of (hash, length) pairs, the manifest, in pages of 8,192. The server looks each hash up in its extendible-hashing index and answers with the indices it does not have. Only those blocks are sent. An identical file therefore sends nothing but the manifest. An edited file sends only the blocks around the edit, because content-defined chunking puts the cut points back in the same places after it.
+
+**Q2. "What does one tile in the block field mean?"**
+The physical store, laid out in storage order (container files end to end), is cut into 384 equal slices. A tile's shade is the byte-weighted average of how many files reference the blocks in that slice: light for blocks written once, dark for blocks shared by five or more files. Hovering a recent upload asks the server which slices hold that file's blocks.
+
+### More questions to practise
+- Why does the server re-hash blocks the browser already hashed? *(Never trust the client: SPEC §13.)*
+- Why are file-list deletes delayed by 6 s? *(Undo must not need a server-side restore; nothing is sent until the undo window closes.)*
+- What happens if two people upload the same new file at the same moment? *(Both store their blocks; the second index insert finds the entry and is a no-op; the extra container bytes become orphan bytes that compaction (M12) reclaims.)*
+- Why is `stats.updated` sent at most twice a second? *(Many uploads at once would otherwise flood every open browser; the payload is small and clients refetch details.)*

@@ -2,6 +2,7 @@
 #include "api/app.h"
 
 #include "api/auth.h"
+#include "api/stats.h"
 #include "api/uploads.h"
 #include "util/json_out.h"
 #include "util/log.h"
@@ -123,11 +124,13 @@ int nx_app_create(const nx_config *cfg, nx_app **out)
             code[i] = (char)(code[i] - 32);
     snprintf(app->join_code, sizeof app->join_code, "%.8s", code);
     if (nx_auth_create(cfg->session_ttl_s, cfg->data_dir, &app->auth) != 0 ||
-        nx_uploads_create(&app->uploads) != 0 || nx_hub_create(&app->hub) != 0)
+        nx_uploads_create(&app->uploads) != 0 || nx_stats_create(&app->stats) != 0 ||
+        nx_hub_create(&app->hub) != 0)
         goto fail;
     *out = app;
     return 0;
 fail:
+    nx_stats_destroy(app->stats);
     nx_uploads_destroy(app->uploads);
     nx_auth_destroy(app->auth);
     pthread_mutex_destroy(&app->join_mu);
@@ -169,6 +172,7 @@ static void *bg_main(void *arg)
             if (st.last_checkpoint_pages > 0) /* skip no-op checkpoints */
                 emit_checkpoint(app, &st);
         }
+        nx_stats_tick(app);
     }
     return NULL;
 }
@@ -216,6 +220,7 @@ void nx_app_destroy(nx_app *app)
     if (app->engine && nx_engine_close(app->engine) != 0)
         LOG_ERROR("app", "final checkpoint failed; the next start recovers from the log");
     nx_uploads_destroy(app->uploads);
+    nx_stats_destroy(app->stats);
     nx_auth_destroy(app->auth);
     pthread_mutex_destroy(&app->join_mu);
     free(app);

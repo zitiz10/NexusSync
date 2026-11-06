@@ -1,0 +1,902 @@
+/*
+ * Screens from M9: Overview, Files, the upload tray, drawer, toast
+ * (DESIGN.md §6, §8.2–§8.4, §9). Tokens only.
+ */
+
+/* ---- shared bits -------------------------------------------------------------- */
+
+.display {
+  font-size: var(--fs-display);
+  font-weight: 300;
+  line-height: 1;
+  letter-spacing: -0.035em;
+  text-wrap: balance;
+}
+
+.display__line {
+  display: block;
+}
+
+a.btn {
+  text-decoration: none; /* a link styled as a button */
+}
+
+.actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--s-3);
+}
+
+.section-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--s-4);
+  margin-bottom: var(--s-2);
+}
+
+.quiet {
+  padding: var(--s-5) 0;
+  color: var(--ink-2);
+}
+
+.inline-error {
+  padding: var(--s-4) 0;
+  color: var(--danger);
+  font-size: var(--fs-small);
+}
+
+.inline-error .text-btn {
+  color: inherit;
+  font-size: inherit;
+}
+
+.skeleton--display {
+  height: calc(var(--fs-display) * 2);
+  width: min(560px, 90%);
+}
+
+.skeleton--block {
+  height: calc(var(--s-24) * 2);
+  width: 100%;
+}
+
+.icon-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: var(--ctl-h);
+  height: var(--ctl-h);
+  flex: none;
+  border: 0;
+  border-radius: var(--r-ctl);
+  background: none;
+  color: var(--ink-2);
+  cursor: pointer;
+  transition:
+    background-color var(--t-micro) var(--ease-out),
+    color var(--t-micro) var(--ease-out);
+}
+
+@media (hover: hover) {
+  .icon-btn:hover {
+    background: var(--surface-press);
+    color: var(--ink);
+  }
+}
+
+/* ---- key-value lists ------------------------------------------------------------ */
+
+.kv {
+  display: grid;
+}
+
+.kv__row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1.3fr);
+  gap: var(--s-4);
+  padding: var(--s-3) 0;
+  border-bottom: 1px solid var(--line);
+}
+
+.kv dt {
+  color: var(--ink-2);
+  font-size: var(--fs-small);
+}
+
+.kv dd {
+  margin: 0;
+  font-size: var(--fs-small);
+}
+
+/* ---- dedup bar (DESIGN §6) --------------------------------------------------------- */
+
+.dedup {
+  position: relative;
+  display: block;
+  height: var(--bar-h);
+  border-radius: var(--r-bar);
+  background: var(--new);
+  overflow: hidden;
+}
+
+.dedup__fill,
+.dedup__sent {
+  position: absolute;
+  inset: 0 auto 0 0;
+  width: 100%;
+  transform-origin: left center;
+  transition: transform var(--t-state) var(--ease-out);
+}
+
+.dedup__fill {
+  background: var(--shared);
+}
+
+.dedup--live {
+  background: var(--surface-press);
+}
+
+/* Live bar: the peach layer (stored + sent so far) sits under the blue one
+ * (stored); both only scale, so progress animates smoothly (DESIGN §9). */
+.dedup__sent {
+  background: var(--new);
+}
+
+/* ---- rows (DESIGN §6) ------------------------------------------------------------------- */
+
+.rows {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.row {
+  position: relative;
+  display: grid;
+  align-items: center;
+  gap: var(--s-2) var(--s-6);
+  /* The row reaches 16 px into the gutter so its hover fill has room, while
+   * the text stays put; the hairline is inset to line up with the section
+   * rules (DESIGN §4, §6). */
+  padding: var(--s-5) var(--s-4);
+  margin: 0 calc(-1 * var(--s-4));
+  border-radius: var(--r-row);
+  transition: background-color var(--t-micro) var(--ease-out);
+}
+
+.row::after {
+  content: "";
+  position: absolute;
+  left: var(--s-4);
+  right: var(--s-4);
+  bottom: 0;
+  height: 1px;
+  background: var(--line);
+  transition: opacity var(--t-micro) var(--ease-out);
+}
+
+@media (hover: hover) {
+  .row:not(.row--active):hover,
+  .row--lit {
+    background: var(--surface-hover);
+  }
+  .row:not(.row--active):hover::after,
+  .row--lit::after {
+    opacity: 0;
+  }
+}
+
+.row--selected {
+  background: var(--surface-hover);
+}
+
+.row--selected::after {
+  opacity: 0;
+}
+
+.row__main {
+  display: grid;
+  gap: var(--s-1);
+  min-width: 0;
+}
+
+.row__name {
+  font-size: var(--fs-body);
+  overflow-wrap: anywhere;
+  word-break: normal;
+  text-decoration: none;
+  color: var(--ink);
+}
+
+a.row__name:hover {
+  text-decoration: underline;
+}
+
+.row__open {
+  justify-self: start;
+  padding: 0;
+  border: 0;
+  background: none;
+  text-align: left;
+  cursor: pointer;
+}
+
+.row__size,
+.row__owner {
+  font-size: var(--fs-small);
+  color: var(--ink-2);
+}
+
+.row__dedup {
+  display: grid;
+  gap: var(--s-2);
+  min-width: 0;
+}
+
+.row--recent {
+  grid-template-columns: minmax(0, 1fr) var(--col-size) var(--col-bar);
+}
+
+.row--active .row__name {
+  color: var(--ink);
+}
+
+/* ---- Overview: hero and block field (DESIGN §8.2) ------------------------------------- */
+
+.hero {
+  display: grid;
+  gap: var(--s-12) var(--s-14);
+  align-items: end;
+  padding-bottom: var(--s-12);
+  border-bottom: 1px solid var(--line);
+}
+
+.hero__text {
+  display: grid;
+  gap: var(--s-6);
+  align-content: end;
+}
+
+.hero__field {
+  margin: 0;
+  display: grid;
+  gap: var(--s-4);
+  width: 100%;
+  max-width: var(--field-w);
+}
+
+@media (min-width: 1200px) {
+  .hero {
+    grid-template-columns: minmax(0, 1fr) var(--field-w);
+  }
+  /* Beside the field the column is ~630 px: cap the display size by the
+   * column so "9.7 MB uploaded." stays one line (DESIGN §8.2, M9 note). */
+  .hero__text {
+    container-type: inline-size;
+  }
+  .hero .display {
+    font-size: min(var(--fs-display), 10cqi);
+  }
+}
+
+.bf {
+  display: grid;
+  grid-template-columns: repeat(32, minmax(0, 1fr));
+  gap: var(--tile-gap);
+}
+
+.tile {
+  aspect-ratio: 1;
+  border-radius: var(--r-tile);
+  transition:
+    opacity var(--t-tile-hover) var(--ease-out),
+    background-color var(--t-tile-hover) var(--ease-out);
+}
+
+.tile--l0 {
+  background: var(--tile-empty);
+  box-shadow: inset 0 0 0 1px var(--line-strong);
+}
+.tile--l1 {
+  background: var(--lvl-1);
+}
+.tile--l2 {
+  background: var(--lvl-2);
+}
+.tile--l3 {
+  background: var(--lvl-3);
+}
+.tile--l4 {
+  background: var(--lvl-4);
+}
+
+.bf--loading .tile {
+  background: var(--surface-hover);
+  box-shadow: none;
+}
+
+/* Linked hover: the file's tiles keep their shade and gain an ink outline;
+ * every other tile drops to 22% (DESIGN §8.2). */
+.bf--focus .tile:not(.tile--hit) {
+  opacity: var(--tile-dim);
+}
+
+.bf--focus .tile--hit {
+  box-shadow: inset 0 0 0 var(--tile-outline) var(--ink);
+}
+
+/* Entrance: from above, small and clear, staggered (DESIGN §9). `backwards`
+ * so the tile returns to its normal styles afterwards (hover dimming). */
+.bf--enter .tile {
+  animation: tile-in var(--t-tile-enter) var(--ease-out) backwards;
+  animation-delay: calc(var(--c) * var(--stagger-col) + var(--r) * var(--stagger-row));
+}
+
+@keyframes tile-in {
+  from {
+    opacity: 0;
+    transform: translateY(-8px) scale(0.86);
+  }
+}
+
+.tile--pulse {
+  animation: tile-pulse var(--t-tile-pulse) var(--ease-emph);
+}
+
+@keyframes tile-pulse {
+  50% {
+    transform: scale(1.15);
+  }
+}
+
+.field-caption {
+  display: grid;
+  gap: var(--s-3);
+  min-height: calc(var(--s-12) + var(--s-4)); /* caption swaps on hover; no jump */
+}
+
+.legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--s-2) var(--s-5);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  font-size: var(--fs-meta);
+  color: var(--ink-3);
+}
+
+.legend li {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--s-2);
+}
+
+.legend__swatch {
+  width: var(--s-3);
+  height: var(--s-3);
+  border-radius: var(--r-tile);
+}
+
+/* ---- Overview: lower part ----------------------------------------------------------------- */
+
+.overview-lower {
+  display: grid;
+  gap: var(--s-12) var(--s-14);
+  padding-top: var(--s-12);
+}
+
+@media (min-width: 1200px) {
+  .overview-lower {
+    grid-template-columns: minmax(0, 1fr) var(--side-w);
+  }
+}
+
+/* ---- Files (DESIGN §8.3) -------------------------------------------------------------------- */
+
+.page-head--files {
+  gap: var(--s-8);
+  padding-bottom: var(--s-8);
+}
+
+.title-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: end;
+  justify-content: space-between;
+  gap: var(--s-4) var(--s-6);
+}
+
+.filters {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: end;
+  gap: var(--s-4) var(--s-6);
+}
+
+.filters__search {
+  flex: 1 1 280px;
+  max-width: 420px;
+}
+
+.filters__sort {
+  flex: 0 0 auto;
+}
+
+.select {
+  padding-right: var(--s-8);
+  cursor: pointer;
+}
+
+.segmented {
+  display: inline-flex;
+  gap: var(--s-1);
+  padding: var(--s-1);
+  border-radius: var(--r-ctl);
+  background: var(--surface-press);
+}
+
+.segmented__btn {
+  height: calc(var(--ctl-h) - 2 * var(--s-1));
+  padding: 0 var(--s-4);
+  border: 0;
+  border-radius: calc(var(--r-ctl) - var(--s-1));
+  background: none;
+  color: var(--ink-2);
+  font-size: var(--fs-ui);
+  white-space: nowrap;
+  cursor: pointer;
+  transition:
+    background-color var(--t-micro) var(--ease-out),
+    color var(--t-micro) var(--ease-out);
+}
+
+@media (hover: hover) {
+  .segmented__btn[aria-pressed="false"]:hover {
+    background: var(--bg);
+    color: var(--ink);
+  }
+}
+
+.segmented__btn[aria-pressed="true"] {
+  background: var(--ink);
+  color: var(--on-ink);
+}
+
+.row--file {
+  grid-template-columns: minmax(0, 1fr) var(--col-size) var(--col-bar) var(--col-date) var(--col-actions);
+  cursor: pointer;
+}
+
+.files--admin .row--file {
+  grid-template-columns: minmax(0, 1fr) var(--col-date) var(--col-size) var(--col-bar) var(--col-date) var(--col-actions);
+}
+
+.row__date {
+  white-space: nowrap;
+}
+
+.row__actions {
+  display: flex;
+  justify-content: flex-end; /* fixed column: rows line up whatever icons they have */
+  align-items: center;
+  gap: var(--s-1);
+  margin: calc(-1 * var(--s-3)) 0;
+}
+
+/* Actions appear on hover or keyboard focus; always shown on touch. */
+@media (hover: hover) {
+  .row--file .row__actions {
+    opacity: 0;
+    transition: opacity var(--t-micro) var(--ease-out);
+  }
+  .row--file:hover .row__actions,
+  .row--file:focus-within .row__actions,
+  .row--selected .row__actions {
+    opacity: 1;
+  }
+}
+
+.menu-anchor {
+  position: relative;
+}
+
+.menu--row {
+  top: calc(100% + var(--s-1));
+}
+
+.menu__item--danger {
+  color: var(--danger);
+}
+
+/* --danger on --surface-hover is 4.35:1: on hover and focus the item takes
+ * the danger fill with ink text instead. */
+.menu__item--danger:hover,
+.menu__item--danger:focus-visible {
+  background: var(--danger-bg);
+  color: var(--ink);
+}
+
+/* Inside the red confirm panel an outlined danger button would be 4.15:1:
+ * the confirming Delete is solid instead (on-ink on --danger is 4.9:1). */
+.btn--danger-solid {
+  background: var(--danger);
+  border-color: var(--danger);
+  color: var(--on-ink);
+}
+
+@media (hover: hover) {
+  .btn--danger-solid:hover {
+    background: var(--ink);
+    border-color: var(--ink);
+    color: var(--on-ink);
+  }
+}
+
+.more {
+  padding-top: var(--s-8);
+}
+
+.empty-line {
+  padding: var(--s-12) 0;
+}
+
+/* ---- drawer (DESIGN §6) ----------------------------------------------------------------------- */
+
+.drawer {
+  position: fixed;
+  inset: 0 0 0 auto;
+  z-index: 30;
+  width: min(var(--drawer-w), 100vw);
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  border-left: 1px solid var(--line);
+  border-radius: var(--r-tray) 0 0 var(--r-tray);
+  background: var(--surface);
+  box-shadow: var(--shadow-float);
+  animation: drawer-in var(--t-state) var(--ease-emph);
+}
+
+/* The panel takes focus when it opens (for screen readers); the controls
+ * inside show the focus ring, the panel itself does not. */
+.drawer:focus {
+  outline: none;
+}
+
+.drawer--closing {
+  animation: drawer-out var(--t-state) var(--ease-emph) forwards;
+}
+
+@keyframes drawer-in {
+  from {
+    transform: translateX(var(--s-10));
+    opacity: 0;
+  }
+}
+
+@keyframes drawer-out {
+  to {
+    transform: translateX(var(--s-10));
+    opacity: 0;
+  }
+}
+
+.drawer__close {
+  position: absolute;
+  top: var(--s-4);
+  right: var(--s-4);
+}
+
+.drawer__body {
+  display: grid;
+  gap: var(--s-8);
+  padding: var(--s-10) var(--s-8) var(--s-12);
+}
+
+.drawer__head {
+  display: grid;
+  gap: var(--s-2);
+  padding-right: var(--s-12); /* clear of the close button */
+}
+
+.drawer__title {
+  font-size: var(--fs-h2);
+  overflow-wrap: anywhere;
+}
+
+.drawer__h3 {
+  font-size: var(--fs-ui);
+  font-weight: 500;
+  margin-bottom: var(--s-2);
+}
+
+.confirm {
+  display: grid;
+  gap: var(--s-4);
+  padding: var(--s-5);
+  border-radius: var(--r-ctl);
+  background: var(--danger-bg);
+  color: var(--ink);
+}
+
+.hash {
+  display: grid;
+  gap: var(--s-2);
+}
+
+.hash__head {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+}
+
+.hash__value {
+  font-size: var(--fs-meta);
+  overflow-wrap: anywhere;
+  line-height: 1.6;
+  user-select: all;
+}
+
+.check {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--s-3);
+  font-size: var(--fs-small);
+  cursor: pointer;
+}
+
+.check input {
+  width: var(--icon);
+  height: var(--icon);
+  accent-color: var(--shared);
+  margin: 0;
+}
+
+.versions {
+  list-style: none;
+  margin: 0 0 var(--s-4);
+  padding: 0;
+}
+
+.versions__row {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  gap: var(--s-1) var(--s-4);
+  padding: var(--s-3) 0;
+  border-bottom: 1px solid var(--line);
+}
+
+/* ---- upload tray (DESIGN §6, §8.4) ------------------------------------------------------------- */
+
+.tray {
+  position: fixed;
+  right: var(--s-4);
+  bottom: var(--s-4);
+  z-index: 35; /* above the drawer: a file dropped while it is open still shows */
+  width: var(--tray-w);
+  max-height: 45vh; /* never hides most of the screen (projector, phone) */
+  display: flex;
+  flex-direction: column;
+  border: 1px solid var(--line);
+  border-radius: var(--r-tray);
+  background: var(--surface);
+  box-shadow: var(--shadow-float);
+  animation: tray-in var(--t-state) var(--ease-emph);
+}
+
+@keyframes tray-in {
+  from {
+    transform: translateY(var(--s-4));
+    opacity: 0;
+  }
+}
+
+.tray__head {
+  display: flex;
+  align-items: center;
+  gap: var(--s-3);
+  padding: var(--s-2) var(--s-2) var(--s-2) var(--s-5);
+  min-height: calc(var(--ctl-h) + 2 * var(--s-2));
+}
+
+.tray__title {
+  flex: 1;
+  font-size: var(--fs-ui);
+  font-weight: 500;
+}
+
+.tray__list {
+  list-style: none;
+  margin: 0;
+  padding: 0 var(--s-5) var(--s-2);
+  overflow-y: auto;
+  border-top: 1px solid var(--line);
+}
+
+.tray__row {
+  display: grid;
+  gap: var(--s-2);
+  padding: var(--s-4) 0;
+  border-bottom: 1px solid var(--line);
+}
+
+.tray__row:last-child {
+  border-bottom: 0;
+}
+
+.tray__top,
+.tray__bottom {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--s-4);
+}
+
+.tray__name {
+  min-width: 0;
+  overflow-wrap: anywhere;
+  font-size: var(--fs-ui);
+}
+
+.tray__size {
+  flex: none;
+}
+
+.tray__line {
+  font-size: var(--fs-small);
+  color: var(--ink-2);
+}
+
+.tray__line--failed {
+  color: var(--danger);
+}
+
+.tray__bottom .text-btn {
+  flex: none;
+}
+
+/* ---- toast (DESIGN §6) ------------------------------------------------------------------------- */
+
+.toast-region {
+  position: fixed;
+  left: var(--s-4);
+  bottom: var(--s-4);
+  z-index: 40;
+}
+
+.toast {
+  display: flex;
+  align-items: center;
+  gap: var(--s-4);
+  max-width: min(480px, calc(100vw - 2 * var(--s-4)));
+  padding: var(--s-3) var(--s-3) var(--s-3) var(--s-5);
+  border-radius: var(--r-ctl);
+  background: var(--ink);
+  color: var(--on-ink);
+  font-size: var(--fs-small);
+  box-shadow: var(--shadow-float);
+  animation: tray-in var(--t-state) var(--ease-emph);
+}
+
+.toast__action {
+  flex: none;
+  padding: var(--s-2) var(--s-3);
+  border: 0;
+  border-radius: calc(var(--r-ctl) - var(--s-1));
+  background: none;
+  color: var(--on-ink);
+  font-weight: 500;
+  text-decoration: underline;
+  text-underline-offset: 0.2em;
+  cursor: pointer;
+}
+
+.toast__action:focus-visible {
+  outline-color: var(--on-ink);
+}
+
+/* ---- drop anywhere (DESIGN §7) ------------------------------------------------------------------- */
+
+.drop {
+  position: fixed;
+  inset: 0;
+  z-index: 50;
+  display: grid;
+  place-items: center;
+  padding: var(--s-4);
+  background: color-mix(in srgb, var(--bg) 88%, transparent);
+  pointer-events: none;
+}
+
+.drop::before {
+  content: "";
+  position: absolute;
+  inset: var(--s-4);
+  border: 2px dashed var(--shared);
+  border-radius: var(--r-panel);
+}
+
+.drop__label {
+  font-size: var(--fs-h2);
+  color: var(--ink);
+}
+
+/* ---- compact and phone --------------------------------------------------------------------------- */
+
+@media (max-width: 1199px) {
+  .row--file,
+  .files--admin .row--file {
+    grid-template-columns: minmax(0, 1fr) var(--col-size) var(--col-bar) var(--col-actions);
+  }
+  .row--file .row__date,
+  .row--file .row__owner {
+    display: none;
+  }
+}
+
+@media (max-width: 767px) {
+  .bf {
+    gap: calc(var(--tile-gap) / 2);
+  }
+  .row--recent {
+    grid-template-columns: minmax(0, 1fr) auto;
+  }
+  .row--file,
+  .files--admin .row--file {
+    grid-template-columns: minmax(0, 1fr) var(--col-actions);
+  }
+  .row__dedup {
+    grid-column: 1 / -1;
+  }
+  .row--file .row__actions {
+    grid-row: 1;
+    grid-column: 2;
+  }
+  .row--file .row__size {
+    display: none;
+  }
+  .kv__row {
+    grid-template-columns: minmax(0, 1fr);
+    gap: var(--s-1);
+  }
+  .tray {
+    left: var(--s-2);
+    right: var(--s-2);
+    bottom: var(--s-2);
+    width: auto;
+  }
+  .toast-region {
+    left: var(--s-2);
+    right: var(--s-2);
+    bottom: var(--s-2);
+  }
+  .drawer {
+    border-radius: 0;
+  }
+  .drawer__body {
+    padding: var(--s-8) var(--s-5) var(--s-10);
+  }
+  .segmented__btn {
+    padding: 0 var(--s-3);
+  }
+}
+
+/* ---- reduced motion (DESIGN §9) ------------------------------------------------------------------ */
+
+@media (prefers-reduced-motion: reduce) {
+  .bf--enter .tile,
+  .tile--pulse,
+  .drawer,
+  .drawer--closing,
+  .tray,
+  .toast {
+    animation: none;
+  }
+  .tile,
+  .dedup__fill,
+  .dedup__sent {
+    transition: none;
+  }
+}

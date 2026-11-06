@@ -5,9 +5,9 @@ Resume after an interruption: read `CLAUDE.md`, then this file, re-run the tests
 
 Platforms: macOS (verified locally on Apple Silicon), Linux and Windows (verified in CI once the repo is pushed; see "Open problems").
 
-Sessions so far: session 1 built M1–M3; session 2 built M4–M8. **The next session starts at M9** and continues to M14.
+Sessions so far: session 1 built M1–M3; session 2 built M4–M8; session 3 built M9. **The next session starts at M10** and continues to M14.
 
-**Status (2026-11-06): M1–M8 done and committed. Next: M9 (Overview, Files, upload tray).** Read "Handoff notes for M9–M14" below before starting.
+**Status (2026-11-06, session 3): M1–M9 done and committed. Next: M10 (Compare versions).** M8 was re-verified at the start of session 3 (`check.py` passes; Playwright 18/18, one test re-run alone after the Mac slept mid-run). Read "Handoff notes for M9–M14" below before starting.
 
 ## M1 Scaffold
 - [x] Repo layout per `CLAUDE.md` (plus `server/src/platform/`); module folders fill in from M2
@@ -83,13 +83,13 @@ Sessions so far: session 1 built M1–M3; session 2 built M4–M8. **The next se
 - [x] Tests: web unit 29/29, Playwright 18/18 (including a real SIGKILL and reconnect while staying signed in), `python3 scripts/check.py` passes, typecheck strict, `npm audit` 0
 
 ## M9 Overview, Files, upload tray
-- [ ] Server: `GET /api/stats` (SPEC §12) and the `stats.updated` event (2/s max)
-- [ ] Server: `GET /api/blockmap` (+ `?file=`), and real `newTiles` in `upload.progress`
-- [ ] Browser chunker + hashing in a Web Worker (`web/src/engine/chunker.ts` exists, parity-tested in M2), 8 MB windows
-- [ ] Overview: headline, block field (384 tiles, entrance motion, linked hover, live pulses), Recent uploads, right column (admin engine summary / student storage), empty state
-- [ ] Files: list with search, sort, scope, paging; drawer (versions, blocks, SHA-256 copy, download, delete with 6 s undo toast); share toggle; empty and no-results states
-- [ ] Upload tray: phases Reading → Checking → Sending → Verifying → Done; failures (connection lost + resume, hash mismatch, disk full, session ended); cancel; drag and drop anywhere
-- [ ] Screenshots of every state at three sizes, critique and audit, Playwright flows
+- [x] Server: `GET /api/stats` (SPEC §12) and the `stats.updated` event (2/s max): zeros on a fresh store, logical/physical/ratio/writes skipped after an identical copy, `mine` per user, engine internals admin-only, `null` for times not known yet (D-040); `stats.updated` reaches other students without internals
+- [x] Server: `GET /api/blockmap` (+ `?file=`), and real `newTiles` in `upload.progress`: all 384 tiles level 1 after one upload, level 2 after an identical copy; a second user's file maps to the last 96 tiles, exactly the tiles its live event named; private files 404; bad `tiles` 400; anonymous copy for other students (no id, no name). `test_stats_and_blockmap` under ASan+UBSan, ThreadSanitizer clean (2 runs)
+- [x] Browser chunker + hashing in a Web Worker, 8 MB windows (`web/src/engine/fingerprint.ts`, `fingerprint.worker.ts`): same blocks and SHA-256 as Node's hash at 1 MB, 8 MB, and 65,537-byte windows; upload job (`upload.ts`) unit-tested against a fake server: phases, resume, rejected blocks, 409 retry, every failure kind, cancel (web unit 49/49)
+- [x] Overview: headline, block field (384 tiles, entrance motion, linked hover, live pulses), Recent uploads, right column (admin engine summary / student storage), empty state. Playwright: hover outlines the file's tiles and dims the rest to 0.22; a second browser (student) sees tiles pulse and numbers change when the admin uploads, without seeing the file name
+- [x] Files: list with search, sort, scope, paging; drawer (versions, blocks, SHA-256 copy, download, delete with 6 s undo toast); share toggle; empty and no-results states. Playwright: drawer SHA-256 equals the downloaded bytes' hash; Undo sends nothing; the real delete arrives after 6 s; keyboard path through delete and undo; a shared file is read-only for the student
+- [x] Upload tray: phases Reading → Checking → Sending → Verifying → Done; failures (connection lost + resume, hash mismatch, disk full, session ended); cancel; drag and drop anywhere. Real failures against the real server (dropped request, corrupted chunk rejected by the server, sign-out from another tab); disk full is answered in the browser (D-037). Found and fixed: a resumed upload under-reported bytes sent, and a cancel/chunk race lost the count (D-041)
+- [x] Screenshots of every state at three sizes (`web/screenshots/m9/`, 38 images), independent critique and audit 30/40 with every P1 fixed (D-042); Playwright 27/27 (`npm run e2e`); `check.py` passes (C tests under ASan+UBSan, concurrency, web); ThreadSanitizer clean on upload and server tests
 
 ## M10 Compare versions
 - [ ] Server: `GET /api/compare` with fixed and CDC modes, window, minimap, block details, 5 min cache
@@ -111,12 +111,12 @@ Sessions so far: session 1 built M1–M3; session 2 built M4–M8. **The next se
 
 ## Handoff notes for M9–M14 (read before starting)
 
-**How to resume.** Read `CLAUDE.md`, then this file, then `DESIGN.md` §8.2–§8.4 and SPEC §12 for M9. Re-run the last step's tests first:
+**How to resume.** Read `CLAUDE.md`, then this file, then `DESIGN.md` §8.5 and SPEC §12 "Compare" for M10. Re-run the last step's tests first:
 ```bash
 python3 scripts/check.py          # C tests (ASan), 8-client concurrency test, web unit tests
 cd web && npm run e2e             # builds the app, starts a real nexusd, 18 Playwright tests
 ```
-Both passed at the M8 commit. No GitHub remote yet; do not push. Commit after each milestone (no Co-Authored-By trailers, CLAUDE.md).
+Both passed at the M9 commit (check.py; Playwright 27/27). No GitHub remote yet; do not push. Commit after each milestone (no Co-Authored-By trailers, CLAUDE.md).
 
 **Packages and tools already approved and installed:** cJSON (vendored), Geist fonts, `lucide-react`, `@playwright/test` (uses the installed Google Chrome, `channel: 'chrome'`). Still allowed but not installed: `qrcode` (M11). Downloads need the user's OK each time.
 
@@ -144,7 +144,13 @@ Both passed at the M8 commit. No GitHub remote yet; do not push. Commit after ea
 - C: `tests/nx_server_util.h` (in-process server and raw client); `tests/integration/test_uploads.c` shows the upload protocol.
 - Web: `web/e2e/server.ts` (start, kill, restart the real server); screenshots go to `web/screenshots/<milestone>/`.
 
-**Open design questions for the team (D-039):** offline dimming contrast; live recovery counts. Both are scheduled in M11 above.
+**Added in M9, useful for M10–M11:**
+- `GET /api/stats` has every Engine-screen number (`wal`, `index`, `containers.liveHistogram`, `cleanup`, `integrity`); `integrity` and `cleanup.nextRunAt` are null until M12 fills them (D-040).
+- The drawer's "Compare these two" and the Files row's Compare icon link to `/compare?a=ID&b=ID`; M10 should read those parameters.
+- Shared UI: `components/Drawer.tsx`, `Toast.tsx` (`useToast`), `DedupBar.tsx`, `BlockField.tsx`; `app/copy.ts` (sentences), `app/motion.ts` (`useTween`), `app/clipboard.ts` (works on plain-HTTP LAN addresses); styles in `styles/screens.css`.
+- `e2e/m9.spec.ts` shows how to drive uploads (`setInputFiles` on `[data-testid=upload-input]`) and how to produce failures for real.
+
+**Open design questions for the team:** D-039 (offline dimming contrast; live recovery counts, scheduled in M11) and D-042 item 1 (tile shades below the 3:1 graphics floor).
 
 ## Open problems
 - **Windows and Linux not yet verified.** `plat_win32.c` and the Linux paths of `plat_posix.c` (getrandom, MSG_NOSIGNAL) have not been compiled. They will be once the repo is pushed to GitHub and CI runs, or when a teammate runs `make -C server test` on a Windows laptop (MSYS2) or Linux.

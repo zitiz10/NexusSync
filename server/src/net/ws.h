@@ -67,10 +67,12 @@ size_t nx_ws_frame_header(uint8_t out[10], uint8_t opcode, uint64_t len);
 
 typedef struct nx_hub nx_hub;
 
-enum nx_audience_kind { NX_AUD_ALL, NX_AUD_ADMINS, NX_AUD_USER };
+/* NX_AUD_USER: this user and the admins. NX_AUD_OTHERS: everyone else
+ * (students other than user_id), for the anonymous copy of an event. */
+enum nx_audience_kind { NX_AUD_ALL, NX_AUD_ADMINS, NX_AUD_USER, NX_AUD_OTHERS };
 typedef struct {
     enum nx_audience_kind kind;
-    uint32_t user_id; /* NX_AUD_USER: this user and admins */
+    uint32_t user_id;
 } nx_audience;
 
 int nx_hub_create(nx_hub **out);

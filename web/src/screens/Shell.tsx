@@ -4,7 +4,9 @@ import { useConnection } from '../app/connection';
 import { Brand } from '../components/Mark';
 import { OfflineBanner } from '../components/OfflineBanner';
 import { StatusIndicator } from '../components/StatusIndicator';
+import { UploadTray } from '../components/UploadTray';
 import { UserMenu } from '../components/UserMenu';
+import { useDropAnywhere } from '../app/uploads';
 
 const LINKS = [
   { to: '/', label: 'Overview', end: true, admin: false },
@@ -19,6 +21,8 @@ export function Shell() {
   const user = useUser();
   const { link } = useConnection();
   const isAdmin = user.role === 'admin';
+  // Drag-and-drop anywhere opens the tray with the dropped files (DESIGN §7).
+  const dragging = useDropAnywhere(true);
   return (
     <>
       <a className="skip-link" href="#main">
@@ -51,6 +55,12 @@ export function Shell() {
       <main id="main" tabIndex={-1} className={link.state === 'offline' ? 'main main--dimmed' : 'main'}>
         <Outlet />
       </main>
+      <UploadTray />
+      {dragging ? (
+        <div className="drop" aria-hidden="true">
+          <p className="drop__label">Drop to upload</p>
+        </div>
+      ) : null}
     </>
   );
 }

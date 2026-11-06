@@ -5,13 +5,17 @@
 import type { ReactNode } from 'react';
 import { BrowserRouter, Navigate, Route, Routes, useLocation } from 'react-router-dom';
 import { Join } from '../screens/Join';
-import { Compare, Engine, Files, NotFound, Overview, Users, useTitle } from '../screens/Pages';
+import { Files } from '../screens/Files';
+import { Overview } from '../screens/Overview';
+import { Compare, Engine, NotFound, Users, useTitle } from '../screens/Pages';
 import { Shell, ShellSkeleton } from '../screens/Shell';
 import { SignIn } from '../screens/SignIn';
 import { Recovered, Recovering, Unavailable, Unreachable } from '../screens/SystemStates';
 import { AuthProvider, useAuth } from './auth';
 import { ConnectionProvider, useConnection } from './connection';
 import { ThemeProvider } from './theme';
+import { ToastProvider } from '../components/Toast';
+import { UploadsProvider } from './uploads';
 
 function RequireAuth({ children }: { children: ReactNode }) {
   const { auth } = useAuth();
@@ -109,7 +113,11 @@ export function App() {
       <ConnectionProvider>
         <AuthProvider>
           <BrowserRouter>
-            <Gate />
+            <ToastProvider>
+              <UploadsProvider>
+                <Gate />
+              </UploadsProvider>
+            </ToastProvider>
           </BrowserRouter>
         </AuthProvider>
       </ConnectionProvider>

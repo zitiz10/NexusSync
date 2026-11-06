@@ -181,6 +181,7 @@ typedef struct {
     uint64_t checkpoints;
     uint64_t last_checkpoint_pages;
     uint64_t last_checkpoint_ms;
+    uint64_t last_checkpoint_at_ms; /* unix ms; 0 if no checkpoint ran since open */
     uint64_t wal_bytes;
     uint32_t wal_segments;
     nx_bufpool_stats pool;
@@ -188,5 +189,25 @@ typedef struct {
 } nx_engine_stats;
 
 void nx_engine_get_stats(nx_engine *e, nx_engine_stats *out);
+
+/* Where one stored block lives (an index entry without its hash). */
+typedef struct {
+    uint32_t container_id;
+    uint32_t offset; /* of the record header in the container */
+    uint32_t len;    /* data bytes */
+    uint32_t refcount;
+} nx_block_span;
+
+/* Every index entry in storage order (container id, then offset): the
+ * order the block map (SPEC §12) slices the physical store in. malloc'd. */
+int nx_engine_block_spans(nx_engine *e, nx_block_span **out, size_t *count);
+
+typedef struct {
+    uint32_t id;
+    uint64_t file_bytes; /* including the 64-byte header */
+} nx_container_info;
+
+/* Every container file with its size, ascending ids. malloc'd. */
+int nx_engine_containers(nx_engine *e, nx_container_info **out, size_t *count);
 
 #endif

@@ -13,6 +13,7 @@
  *   - cancel; access rules (owner, shared, admin); list filters and
  *     paging; detail with versions and block counts; delete; fsck clean
  */
+#include "api/stats.h"
 #include "crypto/sha256.h"
 #include "engine/chunk.h"
 #include "nx_server_util.h"
@@ -130,6 +131,8 @@ static uint8_t *chunks_body(const plan *p, const uint8_t *d, const uint32_t *idx
     *len = total;
     return b;
 }
+
+#define NX_TEST_TILES_CAP 4096
 
 /* Parses "[1,2,3]" after key in a JSON text into out. Returns the count. */
 static size_t int_list(const char *json, const char *key, uint32_t *out, size_t cap)
@@ -497,7 +500,55 @@ static void test_dedup_versions_resume(void)
     big_free(&r);
     CHECK(nneed2 == nneed - half);
     fprintf(stderr, "    resume: first session needed %zu blocks, the retry %zu\n", nneed, nneed2);
+    /* Finish the retry: bytesSent counts what both sessions sent, since the
+     * first session's bytes really crossed the network (D-041). */
+    cb = chunks_body(&p, g, need, nneed2, &bl);
+    snprintf(path, sizeof path, "/api/uploads/%s/chunks", uid);
+    REQUIRE(call(f.port, "POST", path, riya, "application/octet-stream", cb, bl, &r) == 0);
+    big_free(&r);
+    free(cb);
+    snprintf(path, sizeof path, "/api/uploads/%s/commit", uid);
+    REQUIRE(call(f.port, "POST", path, riya, NULL, NULL, 0, &r) == 0);
+    CHECK(r.status == 201 && json_u64(bstr(&r), "bytesSent") == 250000 &&
+          strstr(bstr(&r), "\"reusedPercent\":0"));
+    big_free(&r);
     free(mb);
+
+    /* The same after a cancel: start, send a third, cancel, start again. */
+    uint8_t *k = content(&rng, 120000);
+    chunk_plan(k, 120000, false, &p);
+    REQUIRE(start(&f, riya, "cancelled.csv", 120000, &p, "cdc", NULL, uid) == 201);
+    mb = manifest_body(&p, 0, p.n);
+    snprintf(path, sizeof path, "/api/uploads/%s/manifest?page=0", uid);
+    REQUIRE(call(f.port, "POST", path, riya, "application/octet-stream", mb, (size_t)p.n * 36, &r) == 0);
+    nneed = int_list(bstr(&r), "\"need\"", need, 2048);
+    big_free(&r);
+    free(mb);
+    cb = chunks_body(&p, k, need, nneed / 3, &bl);
+    snprintf(path, sizeof path, "/api/uploads/%s/chunks", uid);
+    REQUIRE(call(f.port, "POST", path, riya, "application/octet-stream", cb, bl, &r) == 0);
+    big_free(&r);
+    free(cb);
+    snprintf(path, sizeof path, "/api/uploads/%s", uid);
+    REQUIRE(call(f.port, "DELETE", path, riya, NULL, NULL, 0, &r) == 0);
+    CHECK(r.status == 204);
+    big_free(&r);
+    uint64_t kid;
+    REQUIRE(upload(&f, riya, "cancelled.csv", k, 120000, NULL, &kid, &sent) == 201);
+    CHECK(sent < 120000); /* this session sent only the rest... */
+    snprintf(path, sizeof path, "/api/files/%" PRIu64, kid);
+    REQUIRE(call(f.port, "GET", path, riya, NULL, NULL, 0, &r) == 0);
+    CHECK(json_u64(bstr(&r), "bytesSent") == 120000); /* ...but the file counts both */
+    big_free(&r);
+    /* Another user uploading the same bytes takes over nothing. */
+    char kabir[300];
+    join(&f, "kabir", kabir);
+    REQUIRE(upload(&f, kabir, "cancelled.csv", k, 120000, NULL, &kid, &sent) == 201);
+    snprintf(path, sizeof path, "/api/files/%" PRIu64, kid);
+    REQUIRE(call(f.port, "GET", path, kabir, NULL, NULL, 0, &r) == 0);
+    CHECK(sent == 0 && json_u64(bstr(&r), "bytesSent") == 0);
+    big_free(&r);
+    free(k);
     nx_fsck_report fr;
     CHECK(nx_engine_fsck(f.app->engine, &fr) == 0);
     free(d);
@@ -609,10 +660,171 @@ static void test_files_access_and_listing(void)
     fx_stop(&f);
 }
 
+/* GET /api/stats and /api/blockmap (M9), plus the events that drive the
+ * Overview: upload.progress with real newTiles (and the anonymous copy for
+ * other students) and stats.updated. */
+static int get(fx *f, const char *cookie, const char *path, big *r)
+{
+    return call(f->port, "GET", path, cookie, NULL, NULL, 0, r);
+}
+
+static bool all_tiles_level(const char *json, unsigned level, size_t want)
+{
+    static uint32_t t[NX_TEST_TILES_CAP];
+    size_t n = int_list(json, "\"tiles\"", t, NX_TEST_TILES_CAP);
+    if (n != want)
+        return false;
+    for (size_t i = 0; i < n; i++)
+        if (t[i] != level)
+            return false;
+    return true;
+}
+
+static void test_stats_and_blockmap(void)
+{
+    fx f;
+    /* Share levels (D-040): mean share count -> 0 empty, 1 once, 2 two,
+     * 3 three or four, 4 five or more. */
+    CHECK(nx_share_level(0.0) == 0 && nx_share_level(1.0) == 1 && nx_share_level(1.49) == 1 &&
+          nx_share_level(1.5) == 2 && nx_share_level(2.49) == 2 && nx_share_level(2.5) == 3 &&
+          nx_share_level(4.49) == 3 && nx_share_level(4.5) == 4 && nx_share_level(40.0) == 4);
+    REQUIRE(fx_start(&f, "up_stats", true, 4, 16) == 0);
+    const char *admin = f.admin_cookie;
+    big r;
+
+    /* A fresh store: zeros, an empty map, engine internals for the admin. */
+    REQUIRE(get(&f, admin, "/api/stats", &r) == 0);
+    CHECK(r.status == 200 && json_u64(bstr(&r), "logicalBytes") == 0 &&
+          json_u64(bstr(&r), "physicalBytes") == 0 && strstr(bstr(&r), "\"ratio\":1"));
+    CHECK(strstr(bstr(&r), "\"wal\":{\"lsn\":") && strstr(bstr(&r), "\"liveHistogram\":[") &&
+          strstr(bstr(&r), "\"lastScanAt\":null") && strstr(bstr(&r), "\"nextRunAt\":null") &&
+          strstr(bstr(&r), "\"mine\":{\"files\":0"));
+    big_free(&r);
+    REQUIRE(get(&f, admin, "/api/blockmap", &r) == 0);
+    CHECK(r.status == 200 && strstr(bstr(&r), "\"tileBytes\":0") && all_tiles_level(bstr(&r), 0, 384));
+    big_free(&r);
+    REQUIRE(get(&f, admin, "/api/blockmap?tiles=0", &r) == 0);
+    CHECK(r.status == 400);
+    big_free(&r);
+    REQUIRE(get(&f, admin, "/api/blockmap?tiles=4097", &r) == 0);
+    CHECK(r.status == 400);
+    big_free(&r);
+    REQUIRE(get(&f, admin, "/api/blockmap?tiles=1x", &r) == 0);
+    CHECK(r.status == 400);
+    big_free(&r);
+    REQUIRE(get(&f, NULL, "/api/stats", &r) == 0);
+    CHECK(r.status == 401);
+    big_free(&r);
+
+    char riya[300], kabir[300];
+    join(&f, "riya", riya);
+    join(&f, "kabir", kabir);
+    resp wr;
+    plat_sock ws_riya = ws_open(&f, riya, NULL, &wr);
+    REQUIRE(ws_riya != PLAT_SOCK_INVALID && wr.status == 101);
+    plat_sock ws_kabir = ws_open(&f, kabir, NULL, &wr);
+    REQUIRE(ws_kabir != PLAT_SOCK_INVALID && wr.status == 101);
+
+    /* Riya uploads. She sees her own progress with the tiles her blocks
+     * landed in; Kabir gets only an anonymous copy (no id, no name). */
+    nx_splitmix rng = {9};
+    size_t len = 300000;
+    uint8_t *d = content(&rng, len);
+    uint64_t id1, id2, id3, sent;
+    REQUIRE(upload(&f, riya, "notes.csv", d, len, NULL, &id1, &sent) == 201);
+    static char ev[16384];
+    CHECK(ws_wait_for_copy(ws_riya, "\"phase\":\"sending\"", ev, sizeof ev));
+    CHECK(strstr(ev, "\"fileName\":\"notes.csv\"") && strstr(ev, "\"newTiles\":[0,") &&
+          strstr(ev, ",383]"));
+    CHECK(ws_wait_for_copy(ws_kabir, "\"type\":\"upload.progress\"", ev, sizeof ev));
+    CHECK(strstr(ev, "\"uploadId\":null") && !strstr(ev, "notes.csv") && strstr(ev, "\"newTiles\":[0,"));
+    CHECK(ws_wait_for_copy(ws_kabir, "\"type\":\"stats.updated\"", ev, sizeof ev));
+    CHECK(json_u64(ev, "logicalBytes") == len && !strstr(ev, "\"wal\""));
+
+    REQUIRE(get(&f, riya, "/api/stats", &r) == 0);
+    uint64_t physical = json_u64(bstr(&r), "physicalBytes");
+    CHECK(r.status == 200 && json_u64(bstr(&r), "logicalBytes") == len && physical == len);
+    CHECK(strstr(bstr(&r), "\"mine\":{\"files\":1,\"bytes\":300000,\"reusedPercent\":0"));
+    CHECK(!strstr(bstr(&r), "\"wal\"") && !strstr(bstr(&r), "\"containers\"")); /* admin only */
+    CHECK(json_u64(bstr(&r), "uploadsThisWeek") == 1);
+    big_free(&r);
+    REQUIRE(get(&f, kabir, "/api/stats", &r) == 0);
+    CHECK(strstr(bstr(&r), "\"mine\":{\"files\":0,\"bytes\":0,\"reusedPercent\":100"));
+    big_free(&r);
+
+    /* The map is rebuilt at most every 2 s after a change. */
+    plat_sleep_ms(2100);
+    REQUIRE(get(&f, riya, "/api/blockmap", &r) == 0);
+    CHECK(json_u64(bstr(&r), "physicalBytes") == len && all_tiles_level(bstr(&r), 1, 384));
+    big_free(&r);
+    REQUIRE(get(&f, riya, "/api/blockmap?tiles=10", &r) == 0);
+    CHECK(all_tiles_level(bstr(&r), 1, 10));
+    big_free(&r);
+
+    /* An identical copy: nothing new on disk, every block now shared by 2. */
+    REQUIRE(upload(&f, riya, "notes.csv", d, len, ",\"versionOf\":null", &id2, &sent) == 201);
+    CHECK(sent == 0);
+    plat_sleep_ms(2100);
+    REQUIRE(get(&f, riya, "/api/blockmap", &r) == 0);
+    CHECK(json_u64(bstr(&r), "physicalBytes") == len && all_tiles_level(bstr(&r), 2, 384));
+    big_free(&r);
+    REQUIRE(get(&f, admin, "/api/stats", &r) == 0);
+    CHECK(json_u64(bstr(&r), "logicalBytes") == 2 * len && json_u64(bstr(&r), "physicalBytes") == len &&
+          json_u64(bstr(&r), "writesSkippedBytes") == len && strstr(bstr(&r), "\"ratio\":2"));
+    big_free(&r);
+
+    /* Kabir uploads something else: it lands at the end of the store, so
+     * his file's tiles are the tail, and the event named the same tiles. */
+    size_t len2 = 100000;
+    uint8_t *e = content(&rng, len2);
+    REQUIRE(upload(&f, kabir, "other.csv", e, len2, NULL, &id3, &sent) == 201);
+    CHECK(ws_wait_for_copy(ws_kabir, "\"fileName\":\"other.csv\",\"phase\":\"sending\"", ev, sizeof ev));
+    static uint32_t ev_tiles[NX_TEST_TILES_CAP], file_tiles[NX_TEST_TILES_CAP];
+    size_t nev = int_list(ev, "\"newTiles\"", ev_tiles, NX_TEST_TILES_CAP);
+    char path[96];
+    snprintf(path, sizeof path, "/api/blockmap?file=%" PRIu64, id3);
+    REQUIRE(get(&f, kabir, path, &r) == 0); /* right after the upload: forced rebuild */
+    size_t nft = int_list(bstr(&r), "\"tiles\"", file_tiles, NX_TEST_TILES_CAP);
+    big_free(&r);
+    fprintf(stderr, "    other.csv: event tiles %zu, file tiles %zu (of 384)\n", nev, nft);
+    CHECK(nft >= 90 && nft <= 100 && file_tiles[nft - 1] == 383 && nev == nft &&
+          memcmp(ev_tiles, file_tiles, nft * sizeof *ev_tiles) == 0);
+    snprintf(path, sizeof path, "/api/blockmap?file=%" PRIu64, id1);
+    REQUIRE(get(&f, riya, path, &r) == 0);
+    size_t n1 = int_list(bstr(&r), "\"tiles\"", file_tiles, NX_TEST_TILES_CAP);
+    CHECK(r.status == 200 && n1 >= 288 && n1 <= 289 && file_tiles[0] == 0);
+    big_free(&r);
+    /* Riya's file is private: Kabir gets 404, as for a missing id. */
+    REQUIRE(get(&f, kabir, path, &r) == 0);
+    CHECK(r.status == 404);
+    big_free(&r);
+    REQUIRE(get(&f, kabir, "/api/blockmap?file=999", &r) == 0);
+    CHECK(r.status == 404);
+    big_free(&r);
+    REQUIRE(get(&f, kabir, "/api/blockmap?file=abc", &r) == 0);
+    CHECK(r.status == 404);
+    big_free(&r);
+
+    /* Containers: every stored byte is live, nothing to reclaim yet. */
+    REQUIRE(get(&f, admin, "/api/stats", &r) == 0);
+    CHECK(strstr(bstr(&r), "\"reclaimableBytes\":0") && strstr(bstr(&r), "\"pendingBytes\":0") &&
+          strstr(bstr(&r), "\"liveHistogram\":[0,0,0,0,0,0,0,0,0,1]"));
+    big_free(&r);
+
+    plat_sock_close(ws_riya);
+    plat_sock_close(ws_kabir);
+    nx_fsck_report fr;
+    CHECK(nx_engine_fsck(f.app->engine, &fr) == 0);
+    free(d);
+    free(e);
+    fx_stop(&f);
+}
+
 static const nx_test_case TESTS[] = {
     NX_CASE(test_protocol_and_validation),
     NX_CASE(test_dedup_versions_resume),
     NX_CASE(test_files_access_and_listing),
+    NX_CASE(test_stats_and_blockmap),
 };
 
 int main(int argc, char **argv)

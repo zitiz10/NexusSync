@@ -380,3 +380,60 @@ An independent Impeccable critique (sub-agent, 30 screenshots plus source) score
 4. **The header is about 96 px tall,** not DESIGN §7's "88 px area". The 88 assumes 24 px of content, but the 32 px avatar is taller; the nav no longer adds height.
 5. **The critique's evidence path:** the Impeccable detector script is not installed in this repo, so that half of the critique did not run. Rerun the critique with the plugin installed (PROMPT.md §1 step 6) during M14's polish pass.
 
+
+## D-040 Stats, the block map, and live tiles (M9)
+
+**Tile shade.** SPEC §12 says each tile's shade is "the mean share count of the blocks in that slice". Options: (a) a plain mean over the blocks that start in the tile; (b) a byte-weighted mean over the bytes in the tile. Chosen: **(b)**. A block can straddle two tiles, and on a small store one block covers several tiles, so (a) would leave tiles empty in the middle of the store. The mean is rounded to the nearest level: below 1.5 is 1 ("written once"), below 2.5 is 2, below 4.5 is 3 ("3–4"), and 4 for 5 or more. A block waiting for cleanup (refcount 0) still takes disk space and was written once, so it counts as 1. Tiles are equal slices of the data bytes in storage order (container id, then offset). A store smaller than the tile count gets one byte per tile, so it fills the first tiles instead of leaving gaps.
+
+**Caching.** Sorting the index into storage order means walking every bucket page, so the walk is cached. The whole map follows the spec: it is rebuilt at most every 2 s after a change (the engine's last LSN shows when something changed). Two answers must not be stale: a file's own tiles right after its upload (the hover would otherwise miss the new blocks), and the admin's container numbers (fresh blocks would look reclaimable). Those rebuild as soon as anything changed. Only one rebuild runs at a time, and callers that arrive during it get the previous layout. The cache mutex is a leaf lock and is never held across an engine call (SPEC §9).
+
+**newTiles.** Containers are append-only and ids only grow, so blocks stored a moment ago are the last bytes in storage order. The tiles of a chunk batch are therefore the tiles covering the last `bytes_written` bytes of the physical store. No index walk is needed, and the integration test checks that these tiles equal the file's own `/api/blockmap?file=` answer. Compaction (M12) also appends to a fresh container, so the rule still holds after it. With several uploads at once the batches interleave, and the tiles then cover all of the batches' bytes together.
+
+**Who receives what.** `upload.progress` goes to the uploader and the admins. Other students get an anonymous copy (`uploadId: null`, no file name, only `phase` and `newTiles`) through a new hub audience `NX_AUD_OTHERS`, so every open Overview pulses without revealing who uploaded what. `stats.updated` carries only the global storage numbers, never `mine` or engine internals. Clients refetch `/api/stats` for those. The background thread publishes it at most every 500 ms, and only when the LSN changed.
+
+**Not made up.** Integrity scans and the nightly cleanup arrive in M12. Until then `integrity.lastScanAt` and `cleanup.nextRunAt` are `null`, and the screens say "never" or "not scheduled", not an invented time. `lastCheckpointAt` is `null` until a checkpoint runs after start-up. `bufferHitRate` is cumulative since start (`null` before any page access). The 60 s sparkline on the Engine screen (M11) builds its series in the browser from these values.
+
+## D-041 A resumed upload counts every byte it sent (M9)
+
+**Found in M9's browser test.** An upload lost its connection after sending 1.7 MB, and the retry sent the rest. The Overview then said "1.7 MB never sent over the network", which was false: those bytes crossed the network in the first session. The server counted `bytesSent` per session, and the first session ended without a commit.
+
+**Options.**
+- (a) Leave it, and document that resumed uploads under-report.
+- (b) Have the client report earlier bytes. Rejected: never trust the client.
+- (c) The server remembers bytes sent by sessions that end without a commit (cancel, expiry, failed commit), keyed by owner and file SHA-256. A new session for the same file takes them over. Open sessions of the same file hand over their count too, without being stopped, so a session the client simply gave up on also counts.
+
+**Chosen: (c).** It needs 64 in-memory slots (about 3 KB). A restart forgets them; in that rare case a resumed upload still under-reports, as SPEC §12 says. Another user uploading the same bytes takes over nothing. The integration test checks the abandoned-session case, the cancelled-session case, and the other-user case.
+
+## D-042 M9 design review: what was fixed, what is left (M9)
+
+An independent review (sub-agent, Impeccable critique and audit method, all 38 screenshots plus source, contrast computed from the token values) scored the M9 screens **30/40 ("Good")**. It found no P0s. The Impeccable detector script was not installed, so that part did not run, as in M8 (D-039 item 5).
+
+**P1, all fixed and covered by Playwright:**
+1. Focus never entered the file drawer: it targeted a heading that did not exist yet. The drawer panel now takes focus when it opens.
+2. Delete lost focus twice. Focus now goes to the confirming Delete button, then to the toast's Undo, and to the main content when the toast closes. The e2e test runs the whole path by keyboard.
+3. Undo was the last Tab stop on the page. Solved by fix 2.
+4. The outlined Delete in the red confirm panel was 4.15:1. The confirming Delete is now solid (on-ink on danger is 4.9:1).
+5. The row menu's Delete on hover or focus was 4.35:1. It now takes the danger fill with ink text.
+6. At projector size the tray covered the hero. It is now capped at 45% of the height, folds after everything finishes, and can be closed only when nothing has failed.
+
+**P2/P3 fixed:**
+- Key-value values had a default 40 px indent.
+- Row hairlines now line up with the section rules (an inset line, so `border-color` no longer animates, §9).
+- The tray sits above the drawer.
+- The tray has an always-mounted live region; failed rows no longer use `role=alert`.
+- "Clear"/"Retry"/"Cancel" names now contain their visible label.
+- Search results are announced.
+- The share menu item has a fixed label with a check mark.
+- The block field's text alternative gives per-level tile counts.
+- Students get their own empty copy ("Your files and files shared with the lab will appear here.").
+- The drawer keeps its details while closing.
+- Escape in the search box no longer closes the drawer.
+- "4.0 MB" instead of "4 MB" beside "9.7 MB".
+- The live bar animates by transform only.
+- Screenshots are taken with no hovered row.
+
+**Left on purpose, with the reason:**
+1. **Tile shades are below DESIGN §2's 3:1 graphics floor** (`--lvl-1` on `--bg` is 1.37:1, neighbouring levels about 1.2–1.8:1, and peach/blue in dark mode 1.19:1). Shades meant to read as one ramp cannot all be 3:1 apart; the mockups chose them that way. The text alternative now carries the counts and the legend names the levels. Whether to darken the ramp or relax the floor for ramps is a design decision for the team, like D-039 item 1.
+2. **Toast and tray overlap on phones** for up to 6 s: the toast covers the tray's last row. This is rare (delete and upload at once) and goes away by itself.
+3. **Below 1200 px the Files list drops the date column, and below 768 px the size column.** This keeps names readable on a 1024 px projector. Dates remain in the drawer.
+4. **Picking a third version in the drawer** replaces the oldest pick without a message. Compare (M10) shows which two are compared.

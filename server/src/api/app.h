@@ -26,6 +26,7 @@ enum nx_app_state { NX_APP_RECOVERING = 0, NX_APP_READY = 1, NX_APP_STOPPING = 2
 
 typedef struct nx_auth nx_auth;
 typedef struct nx_uploads nx_uploads;
+typedef struct nx_stats nx_stats;
 
 typedef struct nx_app {
     nx_config cfg;
@@ -34,6 +35,7 @@ typedef struct nx_app {
     nx_hub *hub;
     nx_auth *auth;
     nx_uploads *uploads;
+    nx_stats *stats; /* block-map cache, stats.updated throttle */
     uint32_t pbkdf2_iters; /* SPEC §13: 600,000. Tests lower it in code. */
     uint64_t started_ms;
 

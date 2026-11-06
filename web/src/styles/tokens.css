@@ -107,6 +107,28 @@
 
   /* data dims while offline (DESIGN §8.8) */
   --offline-dim: 0.6;
+
+  /* M9: Overview, Files, upload tray (DESIGN §6, §8.2–§8.4, §9) */
+  --tray-w: 420px;
+  --r-row: 12px; /* row hover fill (DESIGN §6) */
+  --drawer-w: 480px;
+  --bar-h: 6px; /* dedup bar */
+  --r-bar: 3px;
+  --tile-gap: 4px;
+  --tile-outline: 1.5px; /* linked hover: inset ink outline */
+  --tile-dim: 0.22; /* other tiles while a row is hovered */
+  --t-tile-enter: 1100ms; /* Overview tiles settle in */
+  --stagger-col: 26ms;
+  --stagger-row: 38ms;
+  --t-tile-hover: 380ms;
+  --t-tile-pulse: 600ms; /* new blocks land */
+  --t-toast: 6s; /* auto-dismiss, and the delete undo window */
+  --field-w: 480px; /* block field beside the headline (desktop) */
+  --side-w: 360px; /* Overview right column */
+  --col-size: 112px; /* Files: size column */
+  --col-date: 120px;
+  --col-bar: 220px;
+  --col-actions: calc(3 * var(--ctl-h) + 2 * var(--s-1)); /* Download, Compare, More */
 }
 
 /* Dark: system preference, unless the user picked light. Same values as

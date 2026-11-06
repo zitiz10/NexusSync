@@ -5,6 +5,7 @@ import { applyTheme, readTheme } from './app/theme';
 import './styles/tokens.css';
 import './styles/base.css';
 import './styles/components.css';
+import './styles/screens.css';
 
 // Apply the saved theme before the first paint. (An inline script in
 // index.html would be earlier, but the CSP allows scripts from 'self' only.)
