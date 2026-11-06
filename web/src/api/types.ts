@@ -81,8 +81,14 @@ export interface Stats {
     bufferMisses: number;
   };
   containers?: { count: number; bytes: number; reclaimableBytes: number; liveHistogram: number[] };
-  integrity?: { lastScanAt: string | null; verified: number; failures: number };
-  cleanup?: { pendingBytes: number; nextRunAt: string | null };
+  integrity?: { lastScanAt: string | null; verified: number; failures: number; running: boolean; percent: number };
+  cleanup?: {
+    pendingBytes: number;
+    nextRunAt: string | null;
+    running: boolean;
+    lastRunAt: string | null;
+    lastReclaimedBytes: number;
+  };
   server?: {
     version: string;
     dataDir: string;
@@ -96,6 +102,48 @@ export interface Stats {
     gcGraceS: number;
   };
 }
+
+/** engine.gc (M12, SPEC §12): progress, then the result. */
+export type GcEvent =
+  | { phase: 'freeing'; trigger: 'admin' | 'nightly' }
+  | { phase: 'compacting'; done: number; total: number }
+  | { phase: 'failed'; trigger: 'admin' | 'nightly' }
+  | ({ phase: 'done' } & GcResult);
+
+export interface GcResult {
+  trigger: 'admin' | 'nightly';
+  blocksFreed: number;
+  bytesFreed: number;
+  containersCompacted: number;
+  containersSkipped: number;
+  blocksMoved: number;
+  bytesMoved: number;
+  bytesReclaimed: number;
+  durationMs: number;
+}
+
+/** One damaged block a scan found (also the engine.corruption payload). */
+export interface ScanFailure {
+  sha256: string;
+  containerId: number;
+  offset: number;
+  reason: 'crc' | 'hash' | 'unreadable';
+  files: { id: number; name: string }[];
+}
+
+export interface ScanResult {
+  trigger: 'admin' | 'nightly';
+  verified: number;
+  failures: number;
+  durationMs: number;
+  items: ScanFailure[];
+}
+
+/** engine.scan: progress every 1%, then the result. */
+export type ScanEvent =
+  | { phase: 'scanning'; done: number; total: number; percent: number }
+  | { phase: 'failed'; trigger: 'admin' | 'nightly' }
+  | ({ phase: 'done' } & ScanResult);
 
 /** stats.updated: the global numbers only. */
 export type StatsUpdate = Pick<

@@ -14,6 +14,8 @@
  *     paging; detail with versions and block counts; delete; fsck clean
  */
 #include "api/admin.h"
+#include "api/maint.h"
+#include "engine/engine_internal.h"
 #include "api/stats.h"
 #include "cJSON.h"
 #include "util/json_in.h"
@@ -700,8 +702,8 @@ static void test_stats_and_blockmap(void)
     CHECK(r.status == 200 && json_u64(bstr(&r), "logicalBytes") == 0 &&
           json_u64(bstr(&r), "physicalBytes") == 0 && strstr(bstr(&r), "\"ratio\":1"));
     CHECK(strstr(bstr(&r), "\"wal\":{\"lsn\":") && strstr(bstr(&r), "\"liveHistogram\":[") &&
-          strstr(bstr(&r), "\"lastScanAt\":null") && strstr(bstr(&r), "\"nextRunAt\":null") &&
-          strstr(bstr(&r), "\"mine\":{\"files\":0"));
+          strstr(bstr(&r), "\"lastScanAt\":null") && strstr(bstr(&r), "\"lastRunAt\":null") &&
+          strstr(bstr(&r), "\"nextRunAt\":\"") && strstr(bstr(&r), "\"mine\":{\"files\":0"));
     big_free(&r);
     REQUIRE(get(&f, admin, "/api/blockmap", &r) == 0);
     CHECK(r.status == 200 && strstr(bstr(&r), "\"tileBytes\":0") && all_tiles_level(bstr(&r), 0, 384));
@@ -1168,15 +1170,9 @@ static void test_admin(void)
     CHECK(r.status == 200 && strstr(bstr(&r), "\"result\":\"clean\""));
     big_free(&r);
 
-    /* Addresses and the M12 placeholders. */
+    /* Addresses. (Cleanup and scan: test_cleanup_and_scan_api, M12.) */
     REQUIRE(call(f.port, "GET", "/api/admin/addresses", admin, NULL, NULL, 0, &r) == 0);
     CHECK(r.status == 200 && strstr(bstr(&r), "\"items\":["));
-    big_free(&r);
-    REQUIRE(call(f.port, "POST", "/api/admin/gc", admin, NULL, NULL, 0, &r) == 0);
-    CHECK(r.status == 501);
-    big_free(&r);
-    REQUIRE(call(f.port, "POST", "/api/admin/scan", admin, NULL, NULL, 0, &r) == 0);
-    CHECK(r.status == 501);
     big_free(&r);
 
     /* Admin stats carry the server facts. */
@@ -1224,6 +1220,173 @@ static void test_recovery_log(void)
     CHECK(nx_recovery_log_read(dir, v, 8) == 2);
 }
 
+/* M12: cleanup and the integrity scan through the API (SPEC §10, §12). */
+static bool event_u64(const char *ev, const char *key, uint64_t *v)
+{
+    char pat[64];
+    snprintf(pat, sizeof pat, "\"%s\":", key);
+    const char *p = strstr(ev, pat);
+    if (!p)
+        return false;
+    *v = strtoull(p + strlen(pat), NULL, 10);
+    return true;
+}
+
+static void test_cleanup_and_scan_api(void)
+{
+    fx f;
+    REQUIRE(fx_start(&f, "up_maint", true, 4, 16) == 0);
+    f.app->cfg.gc_grace_s = 0; /* blocks become cleanup work at once */
+    const char *admin = f.admin_cookie;
+    char riya[300];
+    join(&f, "riya", riya);
+    resp wr;
+    plat_sock ws = ws_open(&f, admin, NULL, &wr);
+    REQUIRE(ws != PLAT_SOCK_INVALID);
+    nx_splitmix rng = {41};
+    uint8_t *a = content(&rng, 120000), *b = content(&rng, 80000);
+    uint64_t ida, idb, sent;
+    REQUIRE(upload(&f, riya, "a.csv", a, 120000, NULL, &ida, &sent) == 201);
+    REQUIRE(upload(&f, riya, "b.csv", b, 80000, NULL, &idb, &sent) == 201);
+    char path[96];
+    snprintf(path, sizeof path, "/api/files/%" PRIu64, ida);
+    big r;
+    REQUIRE(call(f.port, "DELETE", path, riya, NULL, NULL, 0, &r) == 0);
+    CHECK(r.status == 204);
+    big_free(&r);
+
+    /* Students may not start maintenance. */
+    REQUIRE(call(f.port, "POST", "/api/admin/gc", riya, NULL, NULL, 0, &r) == 0);
+    CHECK(r.status == 403);
+    big_free(&r);
+    REQUIRE(call(f.port, "POST", "/api/admin/scan", riya, NULL, NULL, 0, &r) == 0);
+    CHECK(r.status == 403);
+    big_free(&r);
+
+    /* Hold the engine's maintenance lock so the job stays "running". */
+    pthread_mutex_lock(&f.app->engine->maint_mu);
+    REQUIRE(call(f.port, "POST", "/api/admin/gc", admin, NULL, NULL, 0, &r) == 0);
+    CHECK(r.status == 202 && strstr(bstr(&r), "\"started\":\"gc\""));
+    big_free(&r);
+    REQUIRE(call(f.port, "POST", "/api/admin/scan", admin, NULL, NULL, 0, &r) == 0);
+    CHECK(r.status == 409 && strstr(bstr(&r), "maintenance_running"));
+    big_free(&r);
+    REQUIRE(get(&f, admin, "/api/stats", &r) == 0);
+    CHECK(strstr(bstr(&r), "\"running\":true,\"lastRunAt\":null"));
+    big_free(&r);
+    pthread_mutex_unlock(&f.app->engine->maint_mu);
+
+    char ev[8192];
+    uint64_t freed = 0, reclaimed = 0;
+    CHECK(ws_wait_for_copy(ws, "\"type\":\"engine.gc\",", ev, sizeof ev)); /* "freeing" */
+    REQUIRE(ws_wait_for_copy(ws, "\"phase\":\"done\",\"trigger\":\"admin\",\"blocksFreed\"", ev,
+                             sizeof ev));
+    CHECK(event_u64(ev, "blocksFreed", &freed) && freed > 0);
+    CHECK(event_u64(ev, "bytesReclaimed", &reclaimed));
+    nx_maint_wait(f.app);
+    REQUIRE(get(&f, admin, "/api/stats", &r) == 0);
+    {
+        cJSON *j = nx_json_parse(r.body, r.len);
+        const cJSON *cl = cJSON_GetObjectItemCaseSensitive(j, "cleanup");
+        CHECK(cJSON_IsFalse(cJSON_GetObjectItemCaseSensitive(cl, "running")));
+        CHECK(cJSON_IsString(cJSON_GetObjectItemCaseSensitive(cl, "lastRunAt")));
+        CHECK(cJSON_IsString(cJSON_GetObjectItemCaseSensitive(cl, "nextRunAt")));
+        CHECK(jnum(cl, "lastReclaimedBytes") == reclaimed);
+        CHECK(jnum(cl, "pendingBytes") == 0);
+        const cJSON *in = cJSON_GetObjectItemCaseSensitive(j, "integrity");
+        CHECK(cJSON_IsNull(cJSON_GetObjectItemCaseSensitive(in, "lastScanAt")));
+        cJSON_Delete(j);
+    }
+    big_free(&r);
+    CHECK(download_matches(&f, riya, idb, b, 80000));
+
+    /* A clean scan, then one flipped byte in a block of b.csv. */
+    REQUIRE(call(f.port, "POST", "/api/admin/scan", admin, NULL, NULL, 0, &r) == 0);
+    CHECK(r.status == 202);
+    big_free(&r);
+    REQUIRE(ws_wait_for_copy(ws, "\"type\":\"engine.scan\",\"at\"", ev, sizeof ev));
+    REQUIRE(ws_wait_for_copy(ws, "\"phase\":\"done\",\"trigger\":\"admin\",\"verified\"", ev, sizeof ev));
+    CHECK(strstr(ev, "\"failures\":0,"));
+    nx_maint_wait(f.app);
+    nx_chunk_ref *rb;
+    REQUIRE(nx_engine_file_recipe(f.app->engine, idb, NULL, &rb) == 0);
+    nx_index_entry ent;
+    REQUIRE(nx_engine_lookup(f.app->engine, rb[1].hash, &ent) == 0);
+    char cpath[900];
+    snprintf(cpath, sizeof cpath, "%s/data/containers/c%08" PRIu32 ".dat", f.dir, ent.container_id);
+    plat_file *pf;
+    REQUIRE(plat_file_open(cpath, PLAT_O_WRITE, &pf) == 0);
+    uint8_t byte;
+    uint64_t at = (uint64_t)ent.offset + NX_RECORD_HEADER + 9;
+    REQUIRE(plat_pread(pf, &byte, 1, at) == 1);
+    byte ^= 0x10;
+    REQUIRE(plat_pwrite_all(pf, &byte, 1, at) == 0);
+    plat_file_close(pf);
+
+    REQUIRE(call(f.port, "POST", "/api/admin/scan", admin, NULL, NULL, 0, &r) == 0);
+    CHECK(r.status == 202);
+    big_free(&r);
+    char hex[65];
+    nx_hex(rb[1].hash, 32, hex);
+    REQUIRE(ws_wait_for_copy(ws, "\"type\":\"engine.corruption\"", ev, sizeof ev));
+    CHECK(strstr(ev, hex) && strstr(ev, "\"reason\":\"crc\"") && strstr(ev, "\"name\":\"b.csv\""));
+    REQUIRE(ws_wait_for_copy(ws, "\"phase\":\"done\",\"trigger\":\"admin\",\"verified\"", ev, sizeof ev));
+    CHECK(strstr(ev, "\"failures\":1,") && strstr(ev, hex) && strstr(ev, "b.csv"));
+    nx_maint_wait(f.app);
+    REQUIRE(get(&f, admin, "/api/stats", &r) == 0);
+    {
+        cJSON *j = nx_json_parse(r.body, r.len);
+        const cJSON *in = cJSON_GetObjectItemCaseSensitive(j, "integrity");
+        CHECK(cJSON_IsString(cJSON_GetObjectItemCaseSensitive(in, "lastScanAt")));
+        CHECK(jnum(in, "failures") == 1 && jnum(in, "verified") > 0);
+        cJSON_Delete(j);
+    }
+    big_free(&r);
+    /* The result survives a restart (data/scan_last). */
+    uint64_t when, ver, fails;
+    char ddir[700];
+    snprintf(ddir, sizeof ddir, "%s/data", f.dir);
+    CHECK(nx_scan_last_read(ddir, &when, &ver, &fails) == 0 && fails == 1 && ver > 0);
+    /* Progress ticks are not in the event log; results are. */
+    REQUIRE(get(&f, admin, "/api/admin/events?limit=256", &r) == 0);
+    CHECK(strstr(bstr(&r), "engine.corruption") && strstr(bstr(&r), "\"failures\":1"));
+    CHECK(!strstr(bstr(&r), "\"phase\":\"scanning\""));
+    big_free(&r);
+    /* Cleanup leaves the container with the damaged block where it is. */
+    byte ^= 0x10;
+    REQUIRE(plat_file_open(cpath, PLAT_O_WRITE, &pf) == 0);
+    REQUIRE(plat_pwrite_all(pf, &byte, 1, at) == 0);
+    plat_file_close(pf);
+
+    /* The nightly job: cleanup, then the scan, both marked "nightly". */
+    nx_maint_schedule(f.app, plat_now_unix_s());
+    REQUIRE(ws_wait_for_copy(ws, "\"phase\":\"done\",\"trigger\":\"nightly\",\"blocksFreed\"", ev,
+                             sizeof ev));
+    REQUIRE(ws_wait_for_copy(ws, "\"phase\":\"done\",\"trigger\":\"nightly\",\"verified\"", ev, sizeof ev));
+    CHECK(strstr(ev, "\"failures\":0,"));
+    nx_maint_wait(f.app);
+    REQUIRE(get(&f, admin, "/api/stats", &r) == 0);
+    {
+        cJSON *j = nx_json_parse(r.body, r.len);
+        const cJSON *cl = cJSON_GetObjectItemCaseSensitive(j, "cleanup");
+        const cJSON *next = cJSON_GetObjectItemCaseSensitive(cl, "nextRunAt");
+        CHECK(cJSON_IsString(next));
+        char want[40];
+        plat_format_utc_iso(plat_next_local_time(plat_now_unix_s(), 2, 0) * 1000u, want, sizeof want);
+        CHECK(next && cJSON_IsString(next) && strcmp(next->valuestring, want) == 0);
+        cJSON_Delete(j);
+    }
+    big_free(&r);
+    CHECK(download_matches(&f, riya, idb, b, 80000));
+    nx_fsck_report fr;
+    CHECK(nx_engine_fsck(f.app->engine, &fr) == 0);
+    free(rb);
+    plat_sock_close(ws);
+    fx_stop(&f);
+    free(a);
+    free(b);
+}
+
 static const nx_test_case TESTS[] = {
     NX_CASE(test_protocol_and_validation),
     NX_CASE(test_dedup_versions_resume),
@@ -1232,6 +1395,7 @@ static const nx_test_case TESTS[] = {
     NX_CASE(test_compare),
     NX_CASE(test_admin),
     NX_CASE(test_recovery_log),
+    NX_CASE(test_cleanup_and_scan_api),
 };
 
 int main(int argc, char **argv)

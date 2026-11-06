@@ -405,6 +405,29 @@ uint64_t plat_now_unix_ms(void)
     return (t - EPOCH_DIFF_100NS) / 10000u;
 }
 
+/* Day by day from today, the first hour:minute after now. mktime
+ * normalizes an overflowing tm_mday and works out daylight saving
+ * (tm_isdst = -1). */
+uint64_t plat_next_local_time(uint64_t now_s, int hour, int minute)
+{
+    time_t t = (time_t)now_s;
+    struct tm tm;
+    if (localtime_s(&tm, &t) != 0)
+        return now_s + 86400u;
+    for (int day = 0; day < 3; day++) {
+        struct tm c = tm;
+        c.tm_mday += day;
+        c.tm_hour = hour;
+        c.tm_min = minute;
+        c.tm_sec = 0;
+        c.tm_isdst = -1;
+        time_t r = mktime(&c);
+        if (r != (time_t)-1 && (uint64_t)r > now_s)
+            return (uint64_t)r;
+    }
+    return now_s + 86400u;
+}
+
 uint64_t plat_now_unix_s(void) { return plat_now_unix_ms() / 1000u; }
 
 uint64_t plat_now_mono_us(void)

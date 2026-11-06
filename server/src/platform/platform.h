@@ -106,6 +106,11 @@ uint64_t plat_now_unix_ms(void);
 uint64_t plat_now_mono_ms(void);
 uint64_t plat_now_mono_us(void);
 void plat_sleep_ms(uint32_t ms);
+/* The first moment after now_s (unix seconds) when the local wall clock
+ * reads hour:minute:00, in the server's time zone; the C library handles
+ * daylight saving. Thread-safe (localtime_r / localtime_s). Used for the
+ * nightly cleanup at 02:00 (SPEC §10, M12). */
+uint64_t plat_next_local_time(uint64_t now_s, int hour, int minute);
 /* Formats unix ms as "2026-11-05T14:27:03.123Z" into buf (>= 25 bytes). */
 void plat_format_utc_iso(uint64_t unix_ms, char *buf, size_t n);
 

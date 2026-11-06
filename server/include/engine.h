@@ -214,4 +214,86 @@ typedef struct {
 /* Every container file with its size, ascending ids. malloc'd. */
 int nx_engine_containers(nx_engine *e, nx_container_info **out, size_t *count);
 
+/* ---- cleanup, compaction, integrity (M12, SPEC §10, DECISIONS D-048) ------------ */
+
+/* Asked about each block cleanup would free; true keeps it (an open upload
+ * session declared it). Called with the transaction mutex held, so it
+ * must not call back into the engine. */
+typedef bool (*nx_keep_cb)(const uint8_t hash[32], void *ctx);
+/* Progress of a maintenance job. phase: "freeing", "compacting", "scanning". */
+typedef void (*nx_progress_cb)(const char *phase, uint64_t done, uint64_t total, void *ctx);
+
+typedef struct {
+    uint32_t grace_s;  /* gc_grace_s: unreferenced blocks younger than this stay */
+    uint64_t now_s;    /* 0: the current time (tests pass their own clock) */
+    nx_keep_cb keep;   /* may be NULL */
+    void *keep_ctx;
+    nx_progress_cb progress; /* may be NULL */
+    void *progress_ctx;
+} nx_gc_options;
+
+typedef struct {
+    uint64_t blocks_freed;
+    uint64_t bytes_freed;          /* data bytes of the freed blocks */
+    uint64_t containers_compacted; /* dropped (their files deleted) */
+    uint64_t containers_skipped;   /* below 50% but held a damaged live block */
+    uint64_t blocks_moved;
+    uint64_t bytes_moved;          /* record bytes copied into a fresh container */
+    uint64_t bytes_reclaimed;      /* container file bytes deleted minus bytes copied */
+    uint64_t ms;
+} nx_gc_report;
+
+/* Cleanup: BLOCK_FREE every unreferenced block past its grace period and
+ * not kept, then compact containers below 50% live data. 0 or -1. */
+int nx_engine_gc(nx_engine *e, const nx_gc_options *o, nx_gc_report *r);
+
+enum { NX_SCAN_CRC = 1, NX_SCAN_HASH = 2, NX_SCAN_UNREADABLE = 3 };
+#define NX_SCAN_MAX_ITEMS 100
+
+typedef struct {
+    uint8_t hash[32];
+    uint32_t container_id;
+    uint32_t offset;
+    uint8_t reason; /* NX_SCAN_* */
+} nx_scan_failure;
+
+typedef struct {
+    uint64_t checked;  /* index entries read */
+    uint64_t verified; /* of those, intact */
+    uint64_t failures;
+    nx_scan_failure items[NX_SCAN_MAX_ITEMS]; /* the first failures */
+    size_t n_items;
+    uint64_t ms;
+} nx_scan_report;
+
+/* Integrity scan: reads every indexed block in storage order and checks
+ * its CRC, inline hash, and SHA-256. progress is called at most once per
+ * 1% (and at 100%). 0 or -1 (could not run). */
+int nx_engine_scan(nx_engine *e, nx_progress_cb progress, void *ctx, nx_scan_report *r);
+
+/* For each catalog file whose recipe uses one of hashes[0..n), calls cb
+ * once per (hash index, file). Used to name the files a damaged block
+ * affects. 0 or -1. */
+typedef int (*nx_file_use_cb)(size_t which, const nx_file *f, void *ctx);
+int nx_engine_files_using(nx_engine *e, const uint8_t (*hashes)[32], size_t n, nx_file_use_cb cb,
+                          void *ctx);
+
+typedef struct {
+    uint64_t containers;
+    uint64_t records;      /* complete records read from containers */
+    uint64_t damaged;      /* records whose CRC or SHA-256 failed (not indexed) */
+    uint64_t duplicates;   /* later copies of a hash already indexed (orphan bytes) */
+    uint64_t entries;      /* index entries created */
+    uint64_t files;        /* catalog files whose references were counted */
+    uint64_t missing_blocks; /* referenced by a recipe but in no container */
+    uint64_t files_affected; /* files that use a missing block */
+    char old_index[1100];  /* where the previous index files were moved */
+} nx_rebuild_report;
+
+/* --rebuild-index (offline): moves the index files aside, replays the log
+ * for catalog changes only, rebuilds the index from the containers and
+ * the reference counts from the recipes, and checkpoints. Returns 0, 1
+ * when some referenced blocks were not found, or -1. */
+int nx_engine_rebuild_index(const nx_engine_config *cfg, nx_rebuild_report *r);
+
 #endif

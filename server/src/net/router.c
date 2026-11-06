@@ -2,6 +2,7 @@
 #include "net/router.h"
 
 #include "api/admin.h"
+#include "api/maint.h"
 #include "api/auth.h"
 #include "api/compare.h"
 #include "api/files.h"

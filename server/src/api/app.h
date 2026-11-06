@@ -28,6 +28,7 @@ typedef struct nx_auth nx_auth;
 typedef struct nx_uploads nx_uploads;
 typedef struct nx_stats nx_stats;
 typedef struct nx_compare nx_compare;
+typedef struct nx_maint nx_maint;
 
 typedef struct nx_app {
     nx_config cfg;
@@ -38,6 +39,7 @@ typedef struct nx_app {
     nx_uploads *uploads;
     nx_stats *stats; /* block-map cache, stats.updated throttle */
     nx_compare *compare; /* /api/compare result cache */
+    nx_maint *maint;     /* cleanup and scan jobs, nightly schedule (M12) */
     uint32_t pbkdf2_iters; /* SPEC §13: 600,000. Tests lower it in code. */
     uint64_t started_ms;
     _Atomic uint64_t replayed; /* log records redone so far while recovering */

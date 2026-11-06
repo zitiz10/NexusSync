@@ -31,7 +31,7 @@
 }
 
 @media (hover: hover) {
-  .btn--primary:hover:not(:disabled) {
+  .btn--primary:hover:not(:disabled):not([aria-busy="true"]) {
     background: var(--shared);
   }
 }
@@ -43,7 +43,7 @@
 }
 
 @media (hover: hover) {
-  .btn--secondary:hover:not(:disabled) {
+  .btn--secondary:hover:not(:disabled):not([aria-busy="true"]) {
     background: var(--surface-hover);
     border-color: var(--line-hover);
   }
@@ -56,7 +56,7 @@
 }
 
 @media (hover: hover) {
-  .btn--danger:hover:not(:disabled) {
+  .btn--danger:hover:not(:disabled):not([aria-busy="true"]) {
     background: var(--danger-bg);
   }
 }
@@ -75,6 +75,14 @@
   cursor: progress;
 }
 
+/* In the icon slot the spinner keeps the icon's width, so the button does
+ * not change size (DESIGN §6). Buttons that show a loading state carry an
+ * icon for this reason (M12: an icon-less spinner sat on the label). */
+.btn > .spinner:not(.btn__spinner) {
+  margin: 0 calc((var(--icon) - var(--spinner)) / 2);
+}
+
+/* Full-width buttons have room for the spinner beside the centred label. */
 .btn__spinner {
   position: absolute;
   left: var(--s-5);

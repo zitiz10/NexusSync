@@ -15,6 +15,7 @@
  * checkpoint when the buffer pool is full, and then hold nothing else.
  */
 #include "engine.h"
+#include "engine/engine_internal.h"
 
 #include "crypto/sha256.h"
 #include "engine/checkpoint.h"
@@ -35,41 +36,6 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-
-/* Page files in the buffer pool (and in the doublewrite file). */
-enum { FID_BUCKETS = 0, FID_USERS = 1, FID_FILES = 2, FID_DIR = 3, FID_COUNT = 4 };
-
-#define MAX_RETRIES 10000 /* pool-full / split retries before giving up */
-
-struct nx_engine {
-    nx_engine_config cfg;
-    char dir[1024];
-    char paths[FID_COUNT][1100];
-    char dw_path[1100];
-
-    nx_superblock sb;
-    plat_file *files[FID_COUNT];
-    nx_bufpool *bp;
-    nx_exthash *ix;
-    nx_catalog *cat;
-    nx_recipes *rec;
-    nx_containers *ct;
-    nx_wal *wal;
-
-    pthread_mutex_t txn_mu;
-    /* Under txn_mu: */
-    uint64_t next_lsn;   /* next LSN to hand out */
-    uint64_t stable_lsn; /* every record <= this is fully applied */
-    bool broken;         /* a write failed after the commit point, or the log failed */
-    bool recovering;     /* replaying the log: checkpoints keep the log intact */
-    nx_engine_recovery rinfo;
-
-    _Atomic uint64_t next_file_id;
-    _Atomic uint64_t last_lsn; /* copy of stable_lsn for readers of stats */
-    _Atomic uint64_t logical, physical, unique_blocks, saved;
-    _Atomic uint64_t checkpoints, last_ckpt_pages, last_ckpt_ms, ckpt_lsn;
-    _Atomic uint64_t last_ckpt_at; /* unix ms of the last checkpoint this run (0: none yet) */
-};
 
 void nx_engine_config_defaults(nx_engine_config *cfg)
 {
@@ -437,15 +403,25 @@ static int catalog_call(nx_engine *e, enum cat_op op, const nx_file *f, const nx
     return -1;
 }
 
+static bool is_index_record(uint8_t type)
+{
+    return type == NX_REC_CHUNK_ADD || type == NX_REC_REF_INC || type == NX_REC_REF_DEC ||
+           type == NX_REC_BLOCK_FREE || type == NX_REC_BLOCK_MOVE;
+}
+
 static int apply_record(nx_engine *e, uint8_t type, const uint8_t *p, uint32_t len, uint64_t lsn,
                         bool redo)
 {
     char hx[17];
+    /* --rebuild-index: the index is rebuilt from the containers and the
+     * recipes afterwards, so its old log records are not replayed. */
+    if (e->rebuilding && redo && is_index_record(type))
+        return 0;
     switch (type) {
     case NX_REC_BEGIN:
     case NX_REC_COMMIT:
     case NX_REC_CHECKPOINT:
-    case NX_REC_CONTAINER_DROP: /* the file is removed after the next checkpoint (M12) */
+    case NX_REC_CONTAINER_DROP: /* gc.c deletes the file after the next checkpoint (D-048) */
         return 0;
 
     case NX_REC_CHUNK_ADD: {
@@ -616,14 +592,102 @@ static int log_and_apply(nx_engine *e, const nx_txn *t)
     return 0;
 }
 
+static int count_entry_cb(const nx_index_entry *ent, void *ctx);
+static void reset_counts_cb(void *ctx);
+
+/* ===== helpers shared with gc.c and scan.c (engine_internal.h) ================== */
+
+int nxi_lookup(nx_engine *e, const uint8_t hash[32], nx_index_entry *out, bool have_txn)
+{
+    return lookup(e, hash, out, have_txn);
+}
+
+int nxi_index_insert(nx_engine *e, const nx_index_entry *ent)
+{
+    nx_index_entry copy = *ent;
+    ix_call c = {.op = IX_INSERT, .hash = copy.hash, .entry = &copy, .lsn = e->stable_lsn};
+    return index_call(e, &c, true);
+}
+
+int nxi_index_add_ref(nx_engine *e, const uint8_t hash[32], uint32_t count)
+{
+    ix_call c = {.op = IX_ADD_REF, .hash = hash, .delta = (int64_t)count, .lsn = e->stable_lsn};
+    return index_call(e, &c, true);
+}
+
+int nxi_log_and_apply(nx_engine *e, const nx_txn *t) { return log_and_apply(e, t); }
+
+int nxi_checkpoint_locked(nx_engine *e) { return checkpoint_locked(e, e->stable_lsn); }
+
+int nxi_walk_index(nx_engine *e, nx_index_cb cb, void *ctx, void (*reset)(void *ctx))
+{
+    for (int attempt = 0; attempt < MAX_RETRIES; attempt++) {
+        nx_exthash_lock_shared(e->ix);
+        int rc = nx_exthash_for_each(e->ix, cb, ctx);
+        nx_exthash_unlock(e->ix);
+        if (rc != NX_BP_FULL)
+            return rc == 0 ? 0 : -1;
+        /* Every frame is dirty (no-steal): checkpoint, then walk again. */
+        if (reset)
+            reset(ctx);
+        if (nx_engine_checkpoint(e) != 0)
+            return -1;
+    }
+    return -1;
+}
+
+uint64_t nxi_gate_enter(nx_engine *e)
+{
+    pthread_mutex_lock(&e->gate_mu);
+    uint64_t ep = e->gate_epoch;
+    e->gate_n[ep & 1]++;
+    pthread_mutex_unlock(&e->gate_mu);
+    return ep;
+}
+
+void nxi_gate_leave(nx_engine *e, uint64_t epoch)
+{
+    pthread_mutex_lock(&e->gate_mu);
+    if (--e->gate_n[epoch & 1] == 0)
+        pthread_cond_broadcast(&e->gate_cv);
+    pthread_mutex_unlock(&e->gate_mu);
+}
+
+void nxi_gate_barrier(nx_engine *e)
+{
+    /* Stores that enter from now on count in the other slot, so this wait
+     * cannot be starved by new uploads. Barriers run one at a time
+     * (maint_mu), and each drains its slot before returning, so the slot
+     * the next epoch reuses is empty. */
+    pthread_mutex_lock(&e->gate_mu);
+    uint64_t old = e->gate_epoch++;
+    while (e->gate_n[old & 1] != 0)
+        pthread_cond_wait(&e->gate_cv, &e->gate_mu);
+    pthread_mutex_unlock(&e->gate_mu);
+}
+
+int nxi_recount_blocks(nx_engine *e)
+{
+    atomic_store(&e->physical, 0);
+    atomic_store(&e->unique_blocks, 0);
+    return nxi_walk_index(e, count_entry_cb, e, reset_counts_cb);
+}
+
 /* ===== open / close ============================================================== */
 
-static int count_entry(const nx_index_entry *ent, void *ctx)
+static int count_entry_cb(const nx_index_entry *ent, void *ctx)
 {
     nx_engine *e = ctx;
     atomic_fetch_add(&e->physical, ent->len);
     atomic_fetch_add(&e->unique_blocks, 1);
     return 0;
+}
+
+static void reset_counts_cb(void *ctx)
+{
+    nx_engine *e = ctx;
+    atomic_store(&e->physical, 0);
+    atomic_store(&e->unique_blocks, 0);
 }
 
 static int init_stats(nx_engine *e)
@@ -638,7 +702,7 @@ static int init_stats(nx_engine *e)
     }
     free(fv);
     nx_exthash_lock_shared(e->ix);
-    int rc = nx_exthash_for_each(e->ix, count_entry, e);
+    int rc = nx_exthash_for_each(e->ix, count_entry_cb, e);
     nx_exthash_unlock(e->ix);
     return rc;
 }
@@ -691,6 +755,9 @@ static void free_engine(nx_engine *e)
         if (e->files[i] && plat_file_close(e->files[i]) != 0)
             LOG_ERROR("engine", "close failed path=%s", e->paths[i]);
     pthread_mutex_destroy(&e->txn_mu);
+    pthread_mutex_destroy(&e->maint_mu);
+    pthread_mutex_destroy(&e->gate_mu);
+    pthread_cond_destroy(&e->gate_cv);
     free(e);
 }
 
@@ -783,7 +850,9 @@ static int replay_log(nx_engine *e, replay_ctx *x)
     return 0;
 }
 
-int nx_engine_open(const nx_engine_config *cfg, nx_engine **out)
+int nx_engine_open(const nx_engine_config *cfg, nx_engine **out) { return nxi_open(cfg, false, out); }
+
+int nxi_open(const nx_engine_config *cfg, bool rebuild, nx_engine **out)
 {
     if (!cfg->data_dir || strlen(cfg->data_dir) > 900 || cfg->pool_pages < 16)
         return -1;
@@ -799,6 +868,10 @@ int nx_engine_open(const nx_engine_config *cfg, nx_engine **out)
     snprintf(e->paths[FID_FILES], sizeof e->paths[0], "%s/catalog/files.tbl", e->dir);
     snprintf(e->dw_path, sizeof e->dw_path, "%s/doublewrite.bin", e->dir);
     pthread_mutex_init(&e->txn_mu, NULL);
+    pthread_mutex_init(&e->maint_mu, NULL);
+    pthread_mutex_init(&e->gate_mu, NULL);
+    pthread_cond_init(&e->gate_cv, NULL);
+    e->rebuilding = rebuild;
 
     char path[1100];
     int rc = nx_superblock_load(e->dir, &e->sb);
@@ -858,6 +931,7 @@ int nx_engine_open(const nx_engine_config *cfg, nx_engine **out)
     replay_ctx rx;
     if (replay_log(e, &rx) != 0)
         goto fail;
+    e->rebuilding = false;
 
     /* Next ids (SPEC §8 recovery): never reuse an id that is in the catalog
      * or that a replayed record used (it may have been deleted since). */
@@ -940,6 +1014,9 @@ int nx_engine_store_blocks(nx_engine *e, const nx_block_in *blocks, size_t n, nx
     nx_hmap32 seen;
     if (nx_hmap32_init(&seen, n) != 0)
         return -1;
+    /* From the first append until CHUNK_ADD commits, compaction must not
+     * drop a container this store may have written into (D-048). */
+    uint64_t gate = nxi_gate_enter(e);
     nx_txn t;
     nx_txn_init(&t);
     int rc = 0;
@@ -1006,6 +1083,7 @@ int nx_engine_store_blocks(nx_engine *e, const nx_block_in *blocks, size_t n, nx
         }
         pthread_mutex_unlock(&e->txn_mu);
     }
+    nxi_gate_leave(e, gate);
     nx_txn_free(&t);
     nx_hmap32_free(&seen);
     return rc;
@@ -1074,7 +1152,20 @@ static int read_block(nx_engine *e, const nx_chunk_ref *c, uint8_t *buf, bool ve
     nx_block_loc loc = {ent.container_id, ent.offset, ent.len};
     uint8_t stored_hash[32];
     bool corrupt = false;
-    if (nx_containers_read(e->ct, &loc, buf, NX_CHUNK_MAX_SIZE, stored_hash, &corrupt) != 0)
+    rc = nx_containers_read(e->ct, &loc, buf, NX_CHUNK_MAX_SIZE, stored_hash, &corrupt);
+    if (rc != 0) {
+        /* Compaction may have moved the block and deleted its old
+         * container between our lookup and the read (D-048): if the index
+         * now says somewhere else, read from there. */
+        nx_index_entry now;
+        if (lookup(e, c->hash, &now, have_txn) == 0 &&
+            (now.container_id != ent.container_id || now.offset != ent.offset) && now.len == c->len) {
+            loc = (nx_block_loc){now.container_id, now.offset, now.len};
+            corrupt = false;
+            rc = nx_containers_read(e->ct, &loc, buf, NX_CHUNK_MAX_SIZE, stored_hash, &corrupt);
+        }
+    }
+    if (rc != 0)
         return corrupt ? NX_ENGINE_CORRUPT : -1;
     /* The inline hash catches an index entry that points at the wrong
      * record; re-hashing catches damaged bytes the CRC missed. */

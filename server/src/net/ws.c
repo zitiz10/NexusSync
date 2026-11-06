@@ -462,7 +462,19 @@ void nx_hub_destroy(nx_hub *h)
     free(h);
 }
 
+static void publish(nx_hub *h, const char *type, const char *data_json, nx_audience aud, bool keep);
+
 void nx_hub_publish(nx_hub *h, const char *type, const char *data_json, nx_audience aud)
+{
+    publish(h, type, data_json, aud, true);
+}
+
+void nx_hub_publish_transient(nx_hub *h, const char *type, const char *data_json, nx_audience aud)
+{
+    publish(h, type, data_json, aud, false);
+}
+
+static void publish(nx_hub *h, const char *type, const char *data_json, nx_audience aud, bool keep)
 {
     char at[40];
     plat_format_utc_iso(plat_now_unix_ms(), at, sizeof at);
@@ -482,7 +494,7 @@ void nx_hub_publish(nx_hub *h, const char *type, const char *data_json, nx_audie
         return;
     }
     bool is_stats = strcmp(type, "stats.updated") == 0;
-    bool logged = !is_stats && strcmp(type, "upload.progress") != 0;
+    bool logged = keep && !is_stats && strcmp(type, "upload.progress") != 0;
     char *copy = logged ? malloc(j.len + 1) : NULL;
     if (copy)
         memcpy(copy, j.buf, j.len + 1);

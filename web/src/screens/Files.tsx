@@ -6,7 +6,7 @@
 // or the tab closes), so Undo never has to restore anything on the server.
 import { useCallback, useEffect, useId, useMemo, useRef, useState } from 'react';
 import { Link, useNavigate, useSearchParams } from 'react-router-dom';
-import { Check, Download, GitCompare, MoreHorizontal, Upload } from 'lucide-react';
+import { Check, Download, GitCompare, ListPlus, MoreHorizontal, Upload } from 'lucide-react';
 import { ApiError, api } from '../api/client';
 import type { FileDetail, FileItem } from '../api/types';
 import { useUser } from '../app/auth';
@@ -295,7 +295,7 @@ export function Files() {
           </ul>
           {cursor ? (
             <div className="more">
-              <Button variant="secondary" loading={loadingMore} onClick={() => void more()}>
+              <Button variant="secondary" loading={loadingMore} icon={<Icon of={ListPlus} />} onClick={() => void more()}>
                 Show more files
               </Button>
             </div>

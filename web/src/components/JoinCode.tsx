@@ -3,7 +3,9 @@
 import { useEffect, useRef, useState } from 'react';
 import { ApiError, api } from '../api/client';
 import { copyText } from '../app/clipboard';
+import { RefreshCw } from 'lucide-react';
 import { Button } from './Button';
+import { Icon } from './icons';
 import { useToast } from './Toast';
 
 export function JoinCode() {
@@ -86,7 +88,7 @@ export function JoinCode() {
         >
           <p>Anyone with the old code can no longer join. Accounts already created keep working.</p>
           <div className="actions">
-            <Button autoFocus loading={busy} onClick={() => void rotate()}>
+            <Button autoFocus loading={busy} icon={<Icon of={RefreshCw} />} onClick={() => void rotate()}>
               Rotate the code
             </Button>
             <Button

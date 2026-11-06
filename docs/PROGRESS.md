@@ -5,9 +5,9 @@ Resume after an interruption: read `CLAUDE.md`, then this file, re-run the tests
 
 Platforms: macOS (verified locally on Apple Silicon), Linux and Windows (verified in CI once the repo is pushed; see "Open problems").
 
-Sessions so far: session 1 built M1–M3; session 2 built M4–M8; session 3 built M9–M11. **The next session starts at M12** and continues to M14.
+Sessions so far: session 1 built M1–M3; session 2 built M4–M8; session 3 built M9–M11; session 4 built M12. **The next session starts at M13** and continues to M14.
 
-**Status (2026-11-06, session 3): M1–M11 done and committed. Next: M12 (cleanup, compaction, integrity scan).** M8 was re-verified at the start of session 3 (`check.py` passes; Playwright 18/18, one test re-run alone after the Mac slept mid-run). Read "Handoff notes for M12–M14" below before starting.
+**Status (2026-11-06, session 4): M1–M12 done and committed. Next: M13 (CLI `stats`, demo tooling, evaluation).** M11 was re-verified at the start of session 4 (`check.py` passes; Playwright 41/41). Read "Handoff notes" below before starting.
 
 ## M1 Scaffold
 - [x] Repo layout per `CLAUDE.md` (plus `server/src/platform/`); module folders fill in from M2
@@ -101,7 +101,14 @@ Sessions so far: session 1 built M1–M3; session 2 built M4–M8; session 3 bui
 - [x] Resolve D-039 items 1–2: offline dims only data visuals and text keeps full contrast (checked by computed opacity in Playwright); `/api/health` reports `recordsReplayed` while recovering (engine progress counter, checked in `test_replay_without_checkpoint`) and the recovering page shows it
 
 ## M12 Cleanup, compaction, integrity
-- [ ] GC respecting the grace period and open upload sessions (`nx_uploads_declares` exists), compaction surviving a crash mid-way, scan detecting an injected corrupt byte, nightly schedule, `--rebuild-index`
+- [x] Cleanup (`engine/gc.c`): frees only refcount-0 blocks past `gc_grace_s` and not declared by an open upload, each re-checked under the transaction mutex. `test_cleanup_rules`: nothing freed 1 s before the grace period ends, freed exactly at it, the declared block kept until its session ends, shared blocks of a deleted file kept, freed blocks stay freed after a restart
+- [x] Compaction: containers below 50% live are copied, moved, dropped after the next checkpoint (D-048). `test_compaction`: 7 containers / 1,576 KB → 3 / 394 KB, every file byte-exact, fsck clean, converges, survives a restart. A container with a damaged live block is kept (`test_compaction_skips_damaged`). A store barrier stops compaction from dropping a container an upload has written into but not yet logged; `test_store_barrier` loses the blocks when the barrier is switched off (mutation checked)
+- [x] Compaction survives a crash mid-way: `test_compaction_crash_points` kills the engine at 10 points (frees, mid-copy, after copy, after 1 and 3 containers' moves, mid-apply, checkpoint, after checkpoint, between deletions); each time fsck is clean, all files byte-exact, the next cleanup finishes with no leftover containers. Against the real server, `crash_test.py 50` now runs cleanup during the rounds: 50/50 clean (seed 3), 7,666 operations, 163 cleanups started, 31 cut short by a SIGKILL. Uploads, deletes, and downloads during 8 cleanups: no errors (`test_compaction_under_load`)
+- [x] Integrity scan (`engine/scan.c`): one flipped byte found with reason "crc", both files that share the block named, progress once per 1%; through the API and WebSocket in `test_cleanup_and_scan_api` (202, 409 while running, `engine.corruption`, result kept in `data/scan_last` across restarts, progress ticks left out of the event log)
+- [x] Nightly 02:00 local schedule (`plat_next_local_time`; `test_schedule` with UTC, IST, and the US spring-forward gap); the nightly job runs cleanup then scan, checked in `test_cleanup_and_scan_api`; `cleanup.nextRunAt` in `/api/stats`
+- [x] `--rebuild-index`: `test_rebuild_index` (log replayed for catalog records after a kill, duplicates after compaction, missing-container report); real run on a server data dir with a wiped `buckets.bin`: fsck 200 I1 errors → rebuild → fsck clean, all downloads byte-exact
+- [x] Engine screen: Run cleanup and Scan now with progress, results in words, damaged blocks with their files, next nightly run (DESIGN §8.6). Playwright `e2e/m12.spec.ts` 4/4, screenshots at three sizes and dark in `web/screenshots/m12/`. Independent Impeccable critique/audit 30/40: the P1 (loading buttons dropped focus; nothing announced) and all P2s fixed, which also fixed a spinner drawn over icon-less labels across the app (D-049)
+- [x] Full suite: `make test` (ASan+UBSan) and `make tsan` clean, `check.py` passes, web unit 54/54, Playwright 45/45, `-Werror` clean
 
 ## M13 CLI, demo tooling, evaluation
 - [ ] `nexus stats`; `scripts/make_demo_data.py`, `scripts/demo_reset.py`; `eval/run_eval.py` with tables and charts; `crash_test.py 50` (already passing since M7)
@@ -109,7 +116,14 @@ Sessions so far: session 1 built M1–M3; session 2 built M4–M8; session 3 bui
 ## M14 Polish and final report
 - [ ] Polish pass across the app (Impeccable `polish`, with the plugin's detector installed); every screen and state at three sizes per DESIGN §13; Playwright end-to-end flow of SPEC §15; final report below
 
-## Handoff notes for M12–M14 (read before starting)
+## Handoff notes for M13–M14 (session 4)
+
+**How to resume.** Read `CLAUDE.md`, this file, SPEC §14 (M13 row), §16, §17. Re-run first: `python3 scripts/check.py`, `cd web && npm run e2e` (45 tests, ~2 min; specs run in name order, `m12` restarts the server with `gc_grace_s = 0` and 1 MB containers, so keep it last or name new specs after it).
+- M13 needs: `nexus stats` (SPEC §17), `scripts/make_demo_data.py`, `scripts/demo_reset.py`, `eval/run_eval.py` (matplotlib: check it is installed, ask before installing). `crash_test.py 50` passes (now with cleanup; `--no-cleanup` is the M7 version).
+- M12 map: `server/src/engine/gc.c` (cleanup, compaction), `scan.c` (scan, files-using, rebuild), `engine_internal.h` (engine struct and helpers shared with them), `server/src/api/maint.c` (job thread, nightly, `scan_last`, stats members, handlers). Web: Engine.tsx `runJob`, copy in `app/copy.ts` bottom.
+- Design questions still open for the team: D-039, D-042 item 1, D-045 item 1, and the reviewer's two questions in D-049's context: should a running job be cancellable (now: no, it finishes; shutdown waits for it), and the zero-page check above.
+
+## Handoff notes for M12–M14 (session 3, kept for history)
 
 **How to resume.** Read `CLAUDE.md`, then this file, then SPEC §8 (cleanup) and §10, and DECISIONS D-017 (soft delete), D-040 (block map), D-046 (gc/scan are 501 stubs in `server/src/api/admin.c`) for M12. Re-run the last step's tests first:
 ```bash
@@ -179,6 +193,7 @@ From M8:
 
 ## Open problems
 - **Windows and Linux not yet verified.** `plat_win32.c` and the Linux paths of `plat_posix.c` (getrandom, MSG_NOSIGNAL) have not been compiled. They will be once the repo is pushed to GitHub and CI runs, or when a teammate runs `make -C server test` on a Windows laptop (MSYS2) or Linux.
+- **An all-zero bucket page is opened as an empty page** (M3 behavior, found in M12, D-049). Disk damage that zeroes a page is caught by `--fsck` and repaired by `--rebuild-index`, not at open. Left for the team to decide.
 - **macOS SDK mismatch on the dev Mac.** A leftover beta `MacOSX27.0.sdk` breaks linking. The Makefile works around it (D-009). Deleting that SDK (needs sudo) would remove the need.
 
 ## Final report

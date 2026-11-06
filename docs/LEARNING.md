@@ -615,5 +615,42 @@ The block index's bucket pages for a small lab fit in the 16 MB buffer pool, so 
 
 ### More questions to practise
 - What happens to a disabled student's open browser tab? *(Its WebSocket is closed and the next request gets 401, so it shows "Your session ended".)*
-- Why are "Run cleanup" and "Scan now" disabled? *(Cleanup and the integrity scan are built in M12; the server answers 501 until then, and the screen says so.)*
+- Why were "Run cleanup" and "Scan now" disabled in M11? *(They were built in M12; until then the server answered 501 and the screen said so. See the M12 section.)*
 - Why does rotating the join code not sign anybody out? *(The code is only checked when an account is created; sessions are separate.)*
+
+## M12 — Cleanup, compaction, integrity scan, index rebuild
+
+### What it does
+- **Cleanup** (`server/src/engine/gc.c`, `nx_engine_gc`) has two steps.
+  - *Freeing:* every block that no file uses (refcount 0) and that is older than `gc_grace_s` (1 hour) loses its index entry, through a `BLOCK_FREE` log record. Blocks that an open upload has declared are kept.
+  - *Compaction:* a container whose live data is below 50% gets its live blocks copied into a fresh container. The moves are logged with `BLOCK_MOVE`, and the old file is deleted after the next checkpoint.
+- **Integrity scan** (`server/src/engine/scan.c`, `nx_engine_scan`): it reads every stored block and checks three things: the record's CRC-32, the hash stored in the record, and SHA-256 of the data. For each damaged block it names the files that use it.
+- **`--rebuild-index`:** if the block index is lost or damaged, the server rebuilds it from the containers (every record carries its block's hash) and the recipes (which give the reference counts).
+- **Jobs and schedule** (`server/src/api/maint.c`): an admin starts a job with `POST /api/admin/gc` or `/scan` (answer 202), or the nightly run starts it at 02:00 local time. The job runs on its own thread and reports through `engine.gc` and `engine.scan` events. The Engine screen shows the progress and the result in words.
+
+### Why it is designed this way
+- **Freeing and moving are logged transactions,** like every other change. The crash and recovery code from M5 therefore covers cleanup with no new recovery logic: recovery redoes `BLOCK_FREE` and `BLOCK_MOVE` like any other record.
+- **The order of compaction steps is the safety argument:** copy and fsync, then log the moves, then checkpoint, then delete. A crash before the commit leaves only extra copies, which are harmless orphan bytes. A crash after the commit is fixed by redo. A crash after the checkpoint leaves an old file with nothing live in it, and the next cleanup deletes it. The tests crash at each of these points.
+- **The store barrier.** An upload writes a block into a container *before* it logs `CHUNK_ADD`. If compaction deleted that container in between, the log would point into a missing file. Compaction therefore waits until every upload that started before it has logged its blocks. That is an epoch counter, the same idea as RCU in the Linux kernel. Uploads never wait for compaction. A test shows the data loss when the barrier is switched off.
+- **A damaged live block is never moved.** Moving it would copy the damage and hide where it came from, so its container stays as it is for the scan to report.
+- **Jobs run on their own thread,** because a scan reads every stored byte and may take minutes, longer than a browser waits for an HTTP answer.
+
+### OS and DBMS concepts
+- **Garbage collection by reference counting,** with a grace period. This is the mark-free cousin of what file systems and object stores do with unreferenced extents.
+- **Compaction (segment cleaning),** as in log-structured file systems (LFS) and LSM trees: rewrite mostly-empty segments to get the space back.
+- **Write ordering for crash safety:** "copy, fsync, log, checkpoint, delete" is the same discipline as "write data before the commit record".
+- **Synchronization:** a mutex plus condition variable used as a barrier between two kinds of work, with a defined lock order (SPEC §9).
+- **Derived data:** the index can be rebuilt from the base data, the way a database rebuilds a secondary index.
+
+### Likely examiner questions
+
+**Q1. "The server is killed while compaction is moving blocks. Can a file lose data?"**
+No. The old container is deleted only after the moves are committed in the log and a checkpoint has written them to the index pages. Before the commit, the old locations are still valid. After it, recovery redoes the moves. `test_compaction_crash_points` kills the engine at ten points (during the frees, mid-copy, after the copy, after one or three containers' moves, mid-apply, during the checkpoint, after it, and between deletions). Each time fsck is clean, every file is byte-exact, and the next cleanup finishes the job. `crash_test.py` also runs cleanup during real SIGKILLs of the server.
+
+**Q2. "How does cleanup know a block with refcount 0 is really garbage, and not part of an upload that is still going on?"**
+Two protections. First, the grace period: a block is freed only if it was stored more than `gc_grace_s` ago. Second, the upload session's declared hashes: cleanup asks `nx_uploads_declares` for each candidate. Both are checked again under the transaction mutex just before freeing. If an upload still loses a block in a narrow race, its commit finds the block missing and answers 409, and the client sends the block again; nothing is lost.
+
+### More questions to practise
+- Why 50%? *(Rewriting a container costs copying its live part. Below half live, the copy is smaller than the space it frees.)*
+- Why does the scan keep its last result in a file? *(The demo kills the server; the Engine screen should still say when the last scan ran.)*
+- What does `--rebuild-index` do with blocks no file uses? *(It indexes them with refcount 0; the next cleanup frees them.)*

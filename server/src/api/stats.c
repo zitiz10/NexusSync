@@ -2,6 +2,7 @@
 #include "api/stats.h"
 
 #include "api/files.h"
+#include "api/maint.h"
 #include "engine/container.h"
 #include "util/hmap.h"
 #include "engine/chunk.h"
@@ -347,14 +348,7 @@ static int engine_members(nx_app *app, nx_json *j, const nx_engine_stats *st)
     nx_json_obj_close(j);
     free(ci);
 
-    /* Integrity scans and the nightly cleanup arrive in M12; until then the
-     * honest answer is "never" (null), not a made-up time. */
-    nx_json_key(j, "integrity");
-    nx_json_obj_open(j);
-    key_iso_or_null(j, "lastScanAt", 0);
-    nx_json_key_u64(j, "verified", 0);
-    nx_json_key_u64(j, "failures", 0);
-    nx_json_obj_close(j);
+    nx_maint_json_integrity(app, j);
 
     /* Server facts for the Engine screen (DESIGN §8.6 "Server"). */
     nx_json_key(j, "server");
@@ -371,11 +365,7 @@ static int engine_members(nx_app *app, nx_json *j, const nx_engine_stats *st)
     nx_json_key_u64(j, "gcGraceS", app->cfg.gc_grace_s);
     nx_json_obj_close(j);
 
-    nx_json_key(j, "cleanup");
-    nx_json_obj_open(j);
-    nx_json_key_u64(j, "pendingBytes", pending);
-    key_iso_or_null(j, "nextRunAt", 0);
-    nx_json_obj_close(j);
+    nx_maint_json_cleanup(app, j, pending);
     return 0;
 }
 

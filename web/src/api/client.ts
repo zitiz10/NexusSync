@@ -149,6 +149,8 @@ export const api = {
     request<AdminUser>(`/api/admin/users/${id}`, { method: 'POST', json: change }),
   joinCode: () => request<{ joinCode: string }>('/api/admin/join-code'),
   rotateJoinCode: () => request<{ joinCode: string }>('/api/admin/join-code/rotate', { method: 'POST' }),
+  gc: () => request<{ started: 'gc' }>('/api/admin/gc', { method: 'POST' }),
+  scan: () => request<{ started: 'scan' }>('/api/admin/scan', { method: 'POST' }),
   checkpoint: () => request<{ lsn: number; pages: number; durationMs: number }>('/api/admin/checkpoint', { method: 'POST' }),
   events: (limit = 200) => request<{ items: ServerEvent[] }>(`/api/admin/events?limit=${limit}`),
   recoveries: () => request<{ items: Recovery[] }>('/api/admin/recoveries'),

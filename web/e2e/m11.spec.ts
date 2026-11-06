@@ -53,9 +53,9 @@ test.describe('M11', () => {
     await expect(page.getByTestId('join-code').locator('.joincode__value')).toHaveText(/^[2-9A-HJ-NP-Z]{8}$/);
     await expect(page.getByTestId('recoveries')).toContainText('Clean start');
     await expect(page.getByTestId('event-log')).toContainText('engine.recovery');
-    // Cleanup and scan arrive in M12: shown, not usable, and said so.
-    await expect(page.getByRole('button', { name: 'Run cleanup' })).toBeDisabled();
-    await expect(page.getByRole('button', { name: 'Scan now' })).toBeDisabled();
+    // Cleanup and scan are real since M12 (e2e/m12.spec.ts covers them).
+    await expect(page.getByRole('button', { name: 'Run cleanup' })).toBeEnabled();
+    await expect(page.getByRole('button', { name: 'Scan now' })).toBeEnabled();
 
     // Live: an upload shows up in the event log; the WAL count moves.
     await upload(page, 'engine_probe.csv', 'week,score\n1,90\n2,85\n3,77\n');

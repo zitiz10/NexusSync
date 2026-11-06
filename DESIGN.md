@@ -159,7 +159,7 @@ Wordmark "NexusSync" in Geist 500, 19 px, letter-spacing -0.01em, next to the ma
 
 No photos, illustrations, stock imagery, or decorative graphics anywhere. The data visuals are the imagery.
 
-Icons: `lucide-react`, size 18, `strokeWidth={1.5}`, color inherits. Used sparingly: upload, download, git-compare, trash-2, search, more-horizontal, check, alert-triangle, x, log-out, sun, moon.
+Icons: `lucide-react`, size 18, `strokeWidth={1.5}`, color inherits. Used sparingly: upload, download, git-compare, trash-2, search, more-horizontal, check, alert-triangle, x, log-out, sun, moon. Buttons with a loading state carry an icon, because the spinner replaces the icon slot (M12, D-049): save (Checkpoint now), eraser (Run cleanup), shield-check (Scan now), refresh-cw (Rotate the code), user-x (Disable), list-plus (Show more files).
 
 ## 6. Components
 
@@ -167,7 +167,7 @@ Icons: `lucide-react`, size 18, `strokeWidth={1.5}`, color inherits. Used sparin
 - Primary: `--ink` background, `--on-ink` text; hover background `--shared` over `--t-micro`.
 - Secondary: transparent, 1 px `--line-strong` border, ink text; hover fills `--surface-hover` and border darkens to `#8FA2A8`.
 - Danger: `--danger` text and border; hover fills `--danger-bg`.
-- Disabled: 45% opacity, no hover. Loading: label stays, a 14 px spinner replaces the icon slot, width does not change.
+- Disabled: 45% opacity, no hover. Loading: label stays, a 14 px spinner replaces the icon slot, width does not change; the button keeps focus (`aria-disabled`, clicks ignored) and full opacity (M12).
 - No arrows or chevrons on buttons. Labels are verbs: "Upload a file", "Download", "Delete", "Run cleanup".
 
 **Nav links.** Text links, 15 px, `--ink-2`, padding 12 px 16 px. Hover: color to ink and a 1 px underline that grows left to right over 320 ms `--ease-out` (background-size technique). Current page: ink text with the full 1 px underline, `aria-current="page"`. No pill backgrounds.

@@ -35,7 +35,6 @@ void nx_h_admin_user_update(nx_ctx *c);
 void nx_h_admin_events(nx_ctx *c);
 void nx_h_admin_recoveries(nx_ctx *c);
 void nx_h_admin_addresses(nx_ctx *c);
-void nx_h_admin_gc(nx_ctx *c);
-void nx_h_admin_scan(nx_ctx *c);
+/* POST /api/admin/gc and /api/admin/scan live in maint.h (M12). */
 
 #endif

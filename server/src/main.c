@@ -5,6 +5,8 @@
  *   nexusd --config FILE --init           create the data dir and join code
  *   nexusd --config FILE --create-admin   add an admin (asks on the terminal)
  *   nexusd --config FILE --fsck           full consistency check (I1–I3)
+ *   nexusd --config FILE --rebuild-index  rebuild the block index from the
+ *                                         containers and recipes (offline)
  *   nexusd --version
  * Without --config, the defaults of SPEC §3 are used.
  */
@@ -28,15 +30,20 @@ static void usage(FILE *out)
                  "       nexusd --version\n");
 }
 
+static void engine_config(const nx_config *cfg, nx_engine_config *ec)
+{
+    nx_engine_config_defaults(ec);
+    ec->data_dir = cfg->data_dir;
+    ec->container_size = cfg->container_size;
+    ec->pool_pages = cfg->buffer_pool_pages;
+    ec->verify_on_read = cfg->verify_on_read;
+    ec->verify_on_commit = cfg->verify_on_commit;
+}
+
 static int open_engine(const nx_config *cfg, nx_engine **e)
 {
     nx_engine_config ec;
-    nx_engine_config_defaults(&ec);
-    ec.data_dir = cfg->data_dir;
-    ec.container_size = cfg->container_size;
-    ec.pool_pages = cfg->buffer_pool_pages;
-    ec.verify_on_read = cfg->verify_on_read;
-    ec.verify_on_commit = cfg->verify_on_commit;
+    engine_config(cfg, &ec);
     return nx_engine_open(&ec, e);
 }
 
@@ -145,6 +152,35 @@ static int cmd_fsck(const nx_config *cfg)
     return rc == 0 ? 0 : rc == 1 ? 1 : 2;
 }
 
+/* Offline, with the server stopped: nothing else may use the data dir. */
+static int cmd_rebuild_index(const nx_config *cfg)
+{
+    nx_engine_config ec;
+    engine_config(cfg, &ec);
+    printf("Rebuilding the block index from the containers in %s ...\n", cfg->data_dir);
+    fflush(stdout);
+    nx_rebuild_report r;
+    int rc = nx_engine_rebuild_index(&ec, &r);
+    if (rc < 0) {
+        printf("rebuild-index: could not run (see the errors above)\n");
+        return 2;
+    }
+    printf("containers %" PRIu64 ", records %" PRIu64 " (damaged %" PRIu64 ", duplicate copies %" PRIu64
+           ")\n",
+           r.containers, r.records, r.damaged, r.duplicates);
+    printf("index entries %" PRIu64 ", files counted %" PRIu64 "\n", r.entries, r.files);
+    printf("previous index kept as %s\n", r.old_index);
+    if (rc == 1) {
+        printf("%" PRIu64 " referenced blocks were found in no container; %" PRIu64
+               " files cannot be read in full (listed above)\n",
+               r.missing_blocks, r.files_affected);
+        printf("rebuild-index: done, WITH MISSING BLOCKS\n");
+        return 1;
+    }
+    printf("rebuild-index: done. Run --fsck to check the result.\n");
+    return 0;
+}
+
 static atomic_bool g_shutdown;
 static void on_signal(void) { atomic_store(&g_shutdown, true); }
 
@@ -229,6 +265,5 @@ int main(int argc, char **argv)
         return cmd_create_admin(&cfg);
     if (strcmp(cmd, "--fsck") == 0)
         return cmd_fsck(&cfg);
-    fprintf(stderr, "--rebuild-index arrives in M12.\n");
-    return 2;
+    return cmd_rebuild_index(&cfg);
 }

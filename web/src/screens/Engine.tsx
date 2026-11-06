@@ -3,13 +3,27 @@
 // small visual where it helps, at most one action. Live: stats are polled
 // every 2 s while this page is open (for the hit-rate sparkline), engine
 // events refresh their sections, and the event log follows the socket.
+// Cleanup and the integrity scan (M12) run on the server as jobs; their
+// progress arrives as engine.gc / engine.scan events, and the last result is
+// read back from the event log, so a reload still shows it.
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { ApiError, api } from '../api/client';
-import type { Addresses, Recovery, ServerEvent, Stats } from '../api/types';
+import type { Addresses, GcEvent, GcResult, Recovery, ScanEvent, ScanResult, ServerEvent, Stats } from '../api/types';
 import { useConnection, useNow, useServerEvent } from '../app/connection';
-import { count } from '../app/copy';
+import {
+  count,
+  gcProgressLine,
+  gcResultLine,
+  nextRunLine,
+  scanFailureLine,
+  scanFilesLine,
+  scanProgressLine,
+  scanResultLine,
+} from '../app/copy';
 import { formatAgo, formatBytes } from '../app/format';
+import { Eraser, Save, ShieldCheck } from 'lucide-react';
 import { Button } from '../components/Button';
+import { Icon } from '../components/icons';
 import { JoinCode } from '../components/JoinCode';
 import { QrCode } from '../components/QrCode';
 import { useToast } from '../components/Toast';
@@ -20,6 +34,40 @@ const SPARK_POINTS = 30; /* 60 s at one sample per 2 s */
 const LOG_MAX = 200;
 const QUIET = new Set(['stats.updated', 'upload.progress']);
 const RECOVERIES_SHOWN = 10;
+const START_GRACE_MS = 3000; /* show "running" this long after a 202, until the first event */
+/* Progress ticks are not log lines (the server leaves them out of its log too). */
+const PROGRESS_PHASES = new Set(['freeing', 'compacting', 'scanning']);
+const BUSY_NOTE = 'Cleanup or a scan is already running. Try again when it is done.';
+
+function phaseOf(e: ServerEvent): string | null {
+  const d = e.data as { phase?: unknown } | null;
+  return d && typeof d.phase === 'string' ? d.phase : null;
+}
+
+function isProgress(e: ServerEvent): boolean {
+  return (e.type === 'engine.gc' || e.type === 'engine.scan') && PROGRESS_PHASES.has(phaseOf(e) ?? '');
+}
+
+/** The newest finished run of a job in the log: its result, or 'failed'. */
+function lastFinished<T>(events: LoggedEvent[], type: string): (T & { at: string }) | 'failed' | null {
+  for (let i = events.length - 1; i >= 0; i--) {
+    const { e } = events[i]!;
+    if (e.type !== type) continue;
+    const p = phaseOf(e);
+    if (p === 'done') return { ...(e.data as T), at: e.at };
+    if (p === 'failed') return 'failed';
+  }
+  return null;
+}
+
+function Meter({ percent, label }: { percent: number; label: string }) {
+  const p = Math.max(0, Math.min(100, percent));
+  return (
+    <div className="meter" role="progressbar" aria-label={label} aria-valuemin={0} aria-valuemax={100} aria-valuenow={p}>
+      <span className="meter__fill" style={{ transform: `scaleX(${p / 100})` }} />
+    </div>
+  );
+}
 
 function uptime(s: number): string {
   if (s < 60) return `${s} s`;
@@ -187,6 +235,10 @@ export function Engine() {
   const [error, setError] = useState<string | null>(null);
   const [restError, setRestError] = useState<string | null>(null);
   const [checkpointing, setCheckpointing] = useState(false);
+  const [gcLive, setGcLive] = useState<GcEvent | null>(null);
+  const [scanLive, setScanLive] = useState<ScanEvent | null>(null);
+  const [starting, setStarting] = useState<'gc' | 'scan' | null>(null);
+  const [jobNote, setJobNote] = useState<{ job: 'gc' | 'scan'; text: string } | null>(null);
   const points = useHitRate(stats);
 
   const loadStats = useCallback(async () => {
@@ -220,12 +272,54 @@ export function Engine() {
   useEffect(
     () =>
       subscribe((e) => {
-        if (QUIET.has(e.type)) return;
+        if (QUIET.has(e.type) || isProgress(e)) return;
         setEvents((list) => [...list, tag(e)].slice(-LOG_MAX));
       }),
     [subscribe],
   );
   useServerEvent('engine.recovery', () => void loadRest());
+  useServerEvent('engine.gc', (d) => {
+    const ev = d as GcEvent;
+    setStarting((j) => (j === 'gc' ? null : j));
+    if (ev.phase === 'done' || ev.phase === 'failed') {
+      setGcLive(null);
+      void loadStats();
+    } else {
+      setGcLive(ev);
+    }
+  });
+  useServerEvent('engine.scan', (d) => {
+    const ev = d as ScanEvent;
+    setStarting((j) => (j === 'scan' ? null : j));
+    if (ev.phase === 'done' || ev.phase === 'failed') {
+      setScanLive(null);
+      void loadStats();
+    } else {
+      setScanLive(ev);
+    }
+  });
+
+  const runJob = async (job: 'gc' | 'scan') => {
+    setJobNote(null);
+    setStarting(job);
+    try {
+      await (job === 'gc' ? api.gc() : api.scan());
+      // Normally the first progress event arrives within milliseconds;
+      // without the socket, the stats poll takes over after this.
+      setTimeout(() => setStarting((j) => (j === job ? null : j)), START_GRACE_MS);
+      void loadStats();
+    } catch (e) {
+      setStarting(null);
+      const what = job === 'gc' ? 'Cleanup' : 'The scan';
+      setJobNote({
+        job,
+        text:
+          e instanceof ApiError && e.status === 409
+            ? BUSY_NOTE
+            : `${what} could not start. ${e instanceof ApiError ? e.message : 'Check the connection and try again.'}`,
+      });
+    }
+  };
 
   const checkpoint = async () => {
     setCheckpointing(true);
@@ -250,7 +344,13 @@ export function Engine() {
   const ix = s?.index;
   const ct = s?.containers;
   const integ = s?.integrity;
+  const cl = s?.cleanup;
   const srv = s?.server;
+  const gcRunning = starting === 'gc' || gcLive !== null || !!cl?.running;
+  const scanRunning = starting === 'scan' || scanLive !== null || !!integ?.running;
+  const lastGc = useMemo(() => lastFinished<GcResult>(events, 'engine.gc'), [events]);
+  const lastScan = useMemo(() => lastFinished<ScanResult>(events, 'engine.scan'), [events]);
+  const scanPercent = scanLive?.phase === 'scanning' ? scanLive.percent : (integ?.percent ?? 0);
   const minRate = useMemo(() => {
     const k = points.filter((p): p is number => p !== null);
     return k.length ? Math.min(...k) : null;
@@ -343,7 +443,7 @@ export function Engine() {
           )}
           <p className="meta">Every change is written here and flushed to disk before it counts; after a crash the log is replayed.</p>
           <div className="actions">
-            <Button variant="secondary" loading={checkpointing} onClick={() => void checkpoint()}>
+            <Button variant="secondary" loading={checkpointing} icon={<Icon of={Save} />} onClick={() => void checkpoint()}>
               Checkpoint now
             </Button>
           </div>
@@ -382,7 +482,7 @@ export function Engine() {
 
         <section className="engine__section" aria-labelledby="eng-ct">
           <h2 id="eng-ct">Containers</h2>
-          {!ct || !s?.cleanup ? (
+          {!ct || !cl ? (
             <span className="skeleton skeleton--block" />
           ) : (
             <>
@@ -390,22 +490,55 @@ export function Engine() {
                 rows={[
                   ['Containers', ct.count.toLocaleString('en-US')],
                   ['Total size', formatBytes(ct.bytes)],
-                  ['Reclaimable', formatBytes(ct.reclaimableBytes)],
-                  ['Waiting for cleanup', formatBytes(s.cleanup.pendingBytes)],
+                  ['Unused space inside containers', formatBytes(ct.reclaimableBytes)],
+                  ['Waiting for cleanup', formatBytes(cl.pendingBytes)],
+                  [
+                    'Last cleanup',
+                    cl.lastRunAt ? formatAgo(Date.parse(cl.lastRunAt), now) : 'None since the server started',
+                  ],
+                  ['Next nightly cleanup', nextRunLine(cl.nextRunAt)],
                 ]}
               />
               <h3 className="engine__h3">How full each container is</h3>
               <Histogram bins={ct.liveHistogram} />
             </>
           )}
+          <p className="meta">
+            Cleanup frees blocks no file uses, then rewrites containers that are less than half full. Unused space in fuller
+            containers stays until they empty further.
+          </p>
           <div className="actions">
-            <Button variant="secondary" aria-disabled="true" className="btn--unavailable" onClick={(e) => e.preventDefault()} aria-describedby="gc-note">
+            <Button
+              variant="secondary"
+              loading={gcRunning}
+              icon={<Icon of={Eraser} />}
+              aria-disabled={scanRunning || undefined}
+              className={scanRunning ? 'btn--unavailable' : undefined}
+              aria-describedby="gc-status"
+              onClick={() => (scanRunning ? undefined : void runJob('gc'))}
+              data-testid="run-cleanup"
+            >
               Run cleanup
             </Button>
           </div>
-          <p className="meta" id="gc-note">
-            Cleanup is not part of this server version yet.
+          <p className="meta job-line" id="gc-status" role="status" data-testid="gc-status">
+            {gcRunning
+              ? 'Cleanup started.'
+              : jobNote?.job === 'gc'
+                ? jobNote.text
+                : scanRunning
+                  ? 'Available when the scan is done.'
+                  : lastGc === 'failed'
+                    ? 'The last cleanup failed. The server log has the details.'
+                    : lastGc
+                      ? gcResultLine(lastGc)
+                      : ''}
           </p>
+          {gcRunning ? (
+            <p className="meta" data-testid="gc-progress">
+              {gcProgressLine(gcLive)}
+            </p>
+          ) : null}
         </section>
 
         <section className="engine__section" aria-labelledby="eng-integ">
@@ -430,13 +563,54 @@ export function Engine() {
           )}
           <p className="meta">Downloads already re-check every block against its SHA-256; a scan checks every stored block.</p>
           <div className="actions">
-            <Button variant="secondary" aria-disabled="true" className="btn--unavailable" onClick={(e) => e.preventDefault()} aria-describedby="scan-note">
+            <Button
+              variant="secondary"
+              loading={scanRunning}
+              icon={<Icon of={ShieldCheck} />}
+              aria-disabled={gcRunning || undefined}
+              className={gcRunning ? 'btn--unavailable' : undefined}
+              aria-describedby="scan-status"
+              onClick={() => (gcRunning ? undefined : void runJob('scan'))}
+              data-testid="scan-now"
+            >
               Scan now
             </Button>
           </div>
-          <p className="meta" id="scan-note">
-            Scanning is not part of this server version yet.
+          <p className="meta job-line" id="scan-status" role="status" data-testid="scan-status">
+            {scanRunning
+              ? 'Scan started.'
+              : jobNote?.job === 'scan'
+                ? jobNote.text
+                : gcRunning
+                  ? 'Available when cleanup is done.'
+                  : lastScan === 'failed'
+                    ? 'The last scan could not finish. The server log has the details.'
+                    : lastScan
+                      ? scanResultLine(lastScan)
+                      : integ && integ.failures > 0
+                        ? `The last scan found ${count(integ.failures, 'damaged block')}. Scan again to list them.`
+                        : ''}
           </p>
+          {scanRunning ? (
+            <div className="job-progress">
+              <Meter percent={scanPercent} label="Integrity scan progress" />
+              {/* Not a live region: it changes every 1%. The status line
+                  above says "Scan started." once, then the result. */}
+              <p className="meta" data-testid="scan-progress">
+                {scanProgressLine(scanLive)}
+              </p>
+            </div>
+          ) : null}
+          {!scanRunning && lastScan && lastScan !== 'failed' && lastScan.items.length > 0 ? (
+            <ul className="scan-failures" data-testid="scan-failures">
+              {lastScan.items.map((f) => (
+                <li key={`${f.containerId}:${f.offset}`} className="scan-failures__item">
+                  <span className="state-dot state-dot--danger">{scanFailureLine(f)}</span>
+                  <span className="meta">{scanFilesLine(f)}</span>
+                </li>
+              ))}
+            </ul>
+          ) : null}
         </section>
 
         <section className="engine__section" aria-labelledby="eng-rec">

@@ -9,7 +9,9 @@ import type { AdminUser } from '../api/types';
 import { useUser } from '../app/auth';
 import { useConnection, useNow } from '../app/connection';
 import { formatAgo, formatBytes } from '../app/format';
+import { UserX } from 'lucide-react';
 import { Button } from '../components/Button';
+import { Icon } from '../components/icons';
 import { JoinCode } from '../components/JoinCode';
 import { useToast } from '../components/Toast';
 import { useTitle } from './Pages';
@@ -156,6 +158,7 @@ export function Users() {
                           className="btn--danger-solid"
                           autoFocus
                           loading={busy === u.id}
+                          icon={<Icon of={UserX} />}
                           onClick={() =>
                             void change(u, { status: 'disabled' }, `${u.displayName} is disabled and signed out.`, `enable-${u.id}`)
                           }

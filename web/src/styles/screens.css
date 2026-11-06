@@ -1277,6 +1277,63 @@ a.row__name:hover {
   vector-effect: non-scaling-stroke;
 }
 
+/* ---- cleanup and scan (Engine, M12) ------------------------------------------------ */
+
+/* Scan progress: the dedup bar's shape, filling with --ok as blocks verify. */
+.meter {
+  position: relative;
+  height: var(--bar-h);
+  border-radius: var(--r-bar);
+  background: var(--lvl-1); /* visible against the page, like the block field's lightest tile */
+  overflow: hidden;
+}
+
+.meter__fill {
+  position: absolute;
+  inset: 0;
+  background: var(--ok);
+  transform-origin: left center;
+  transition: transform var(--t-state) var(--ease-out);
+}
+
+.job-progress {
+  display: grid;
+  gap: var(--s-2);
+  margin-top: var(--s-4);
+}
+
+.job-line:empty {
+  display: none;
+}
+
+.scan-failures {
+  list-style: none;
+  margin: var(--s-4) 0 0;
+  padding: 0;
+  display: grid;
+  gap: var(--s-3);
+}
+
+.scan-failures__item {
+  display: grid;
+  gap: var(--s-1);
+}
+
+/* Small text like the lines around it; the dot sits on the first line when
+ * the sentence wraps. */
+.scan-failures__item .state-dot {
+  align-items: flex-start;
+  font-size: var(--fs-small);
+}
+
+.scan-failures__item .state-dot::before {
+  margin-top: calc((1lh - var(--dot)) / 2);
+}
+
+.scan-failures__item .meta {
+  padding-left: calc(var(--dot) + var(--s-2)); /* lines up with the text after the dot */
+}
+
 .btn--unavailable {
   opacity: 0.45; /* DESIGN §6 disabled look, but still focusable so its note is heard */
   cursor: not-allowed;
@@ -1493,7 +1550,8 @@ a.row__name:hover {
   .blk,
   .hist__bar,
   .dedup__fill,
-  .dedup__sent {
+  .dedup__sent,
+  .meter__fill {
     transition: none;
   }
 }

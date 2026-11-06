@@ -314,7 +314,7 @@ void nx_h_admin_user_update(nx_ctx *c)
     nx_json_free(&j);
 }
 
-/* ===== events, addresses, cleanup, scan ===================================================== */
+/* ===== events, addresses ===================================================== */
 
 void nx_h_admin_events(nx_ctx *c)
 {
@@ -377,14 +377,4 @@ void nx_h_admin_addresses(nx_ctx *c)
     nx_json_obj_close(&j);
     nx_reply_json(c, 200, &j, "Cache-Control: no-store\r\n");
     nx_json_free(&j);
-}
-
-void nx_h_admin_gc(nx_ctx *c)
-{
-    nx_reply_error(c, 501, "not_built_yet", "Cleanup arrives with the next server update (M12).");
-}
-
-void nx_h_admin_scan(nx_ctx *c)
-{
-    nx_reply_error(c, 501, "not_built_yet", "The integrity scan arrives with the next server update (M12).");
 }

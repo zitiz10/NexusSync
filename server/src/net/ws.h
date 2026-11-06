@@ -84,6 +84,10 @@ void nx_hub_destroy(nx_hub *h);
 int nx_hub_add(nx_hub *h, plat_sock s, uint32_t user_id, bool admin);
 /* Sends {"type":..,"at":..,"data":<data_json>} to the audience. */
 void nx_hub_publish(nx_hub *h, const char *type, const char *data_json, nx_audience aud);
+/* Same, but not kept in the event log: progress ticks (engine.gc
+ * "compacting", engine.scan "scanning") would push the engine events out
+ * of the 256-entry ring (M12). */
+void nx_hub_publish_transient(nx_hub *h, const char *type, const char *data_json, nx_audience aud);
 /* Drops every connection of a user (logout, disabled account). */
 void nx_hub_kick_user(nx_hub *h, uint32_t user_id);
 size_t nx_hub_client_count(nx_hub *h);

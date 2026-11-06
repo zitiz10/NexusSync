@@ -38,7 +38,7 @@ def free_port() -> int:
 class Server:
     """One nexusd on 127.0.0.1 with its own data dir and config."""
 
-    def __init__(self, work: Path, admin_password: str = "admin-password-1"):
+    def __init__(self, work: Path, admin_password: str = "admin-password-1", extra_conf: str = ""):
         self.work = work
         self.port = free_port()
         self.url = f"http://127.0.0.1:{self.port}"
@@ -53,7 +53,7 @@ class Server:
             f"data_dir = {self.data.as_posix()}\n"
             f"web_root = {(ROOT / 'web' / 'dist').as_posix()}\n"
             "buffer_pool_pages = 256\n"  # small pool: checkpoints happen often
-            "checkpoint_interval_s = 2\n"
+            "checkpoint_interval_s = 2\n" + extra_conf
         )
 
     def nexusd(self, *args: str, stdin: str | None = None) -> subprocess.CompletedProcess:
@@ -120,6 +120,27 @@ class Server:
                                      headers={"Content-Type": "application/json", "X-NexusSync": "1"})
         with urllib.request.urlopen(req, timeout=30) as r:
             assert r.status == 201
+
+
+    def admin_cookie(self) -> str:
+        """Signs in as the admin; returns the Cookie header value."""
+        body = json.dumps({"username": "admin", "password": self.admin_password}).encode()
+        req = urllib.request.Request(self.url + "/api/auth/login", data=body, method="POST",
+                                     headers={"Content-Type": "application/json", "X-NexusSync": "1"})
+        with urllib.request.urlopen(req, timeout=30) as r:
+            return r.headers["Set-Cookie"].split(";", 1)[0]
+
+    def admin_post(self, path: str, cookie: str) -> int | None:
+        """POST to an admin route; the status, or None if the server is gone."""
+        req = urllib.request.Request(self.url + path, data=b"", method="POST",
+                                     headers={"Cookie": cookie, "X-NexusSync": "1"})
+        try:
+            with urllib.request.urlopen(req, timeout=10) as r:
+                return r.status
+        except urllib.error.HTTPError as e:
+            return e.code
+        except (urllib.error.URLError, ConnectionError, TimeoutError, OSError):
+            return None
 
 
 class Cli:

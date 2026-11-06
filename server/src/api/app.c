@@ -4,6 +4,7 @@
 #include "api/admin.h"
 #include "api/auth.h"
 #include "api/compare.h"
+#include "api/maint.h"
 #include "api/stats.h"
 #include "api/uploads.h"
 #include "util/json_out.h"
@@ -128,12 +129,13 @@ int nx_app_create(const nx_config *cfg, nx_app **out)
     snprintf(app->join_code, sizeof app->join_code, "%.8s", code);
     if (nx_auth_create(cfg->session_ttl_s, cfg->data_dir, &app->auth) != 0 ||
         nx_uploads_create(&app->uploads) != 0 || nx_stats_create(&app->stats) != 0 ||
-        nx_compare_create(&app->compare) != 0 ||
+        nx_compare_create(&app->compare) != 0 || nx_maint_create(cfg->data_dir, &app->maint) != 0 ||
         nx_hub_create(&app->hub) != 0)
         goto fail;
     *out = app;
     return 0;
 fail:
+    nx_maint_destroy(app->maint);
     nx_compare_destroy(app->compare);
     nx_stats_destroy(app->stats);
     nx_uploads_destroy(app->uploads);
@@ -152,8 +154,9 @@ static void emit_checkpoint(nx_app *app, const nx_engine_stats *st)
     nx_hub_publish(app->hub, "engine.checkpoint", data, (nx_audience){NX_AUD_ADMINS, 0});
 }
 
-/* Runs a checkpoint every checkpoint_interval_s (SPEC §3), and announces
- * every checkpoint the engine ran, whoever triggered it. */
+/* Runs a checkpoint every checkpoint_interval_s (SPEC §3), announces
+ * every checkpoint the engine ran, whoever triggered it, and starts the
+ * nightly cleanup and scan (M12). */
 static void *bg_main(void *arg)
 {
     nx_app *app = arg;
@@ -178,6 +181,7 @@ static void *bg_main(void *arg)
                 emit_checkpoint(app, &st);
         }
         nx_stats_tick(app);
+        nx_maint_tick(app);
     }
     return NULL;
 }
@@ -226,6 +230,10 @@ void nx_app_destroy(nx_app *app)
     atomic_store(&app->bg_stop, true);
     if (app->bg_running)
         pthread_join(app->bg, NULL);
+    /* A running cleanup or scan finishes first: it uses the hub and the
+     * engine, and stopping it half way gains nothing (D-048). */
+    nx_maint_destroy(app->maint);
+    app->maint = NULL;
     nx_hub_destroy(app->hub); /* delivers server.shutdown first */
     if (app->engine && nx_engine_close(app->engine) != 0)
         LOG_ERROR("app", "final checkpoint failed; the next start recovers from the log");
