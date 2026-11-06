@@ -7,7 +7,7 @@ Platforms: macOS (verified locally on Apple Silicon), Linux and Windows (verifie
 
 Sessions so far: session 1 built M1–M3; session 2 built M4–M8; session 3 built M9–M11. **The next session starts at M12** and continues to M14.
 
-**Status (2026-11-06, session 3): M1–M11 done and committed. Next: M12 (cleanup, compaction, integrity scan).** M8 was re-verified at the start of session 3 (`check.py` passes; Playwright 18/18, one test re-run alone after the Mac slept mid-run). Read "Handoff notes for M9–M14" below before starting.
+**Status (2026-11-06, session 3): M1–M11 done and committed. Next: M12 (cleanup, compaction, integrity scan).** M8 was re-verified at the start of session 3 (`check.py` passes; Playwright 18/18, one test re-run alone after the Mac slept mid-run). Read "Handoff notes for M12–M14" below before starting.
 
 ## M1 Scaffold
 - [x] Repo layout per `CLAUDE.md` (plus `server/src/platform/`); module folders fill in from M2
@@ -109,18 +109,43 @@ Sessions so far: session 1 built M1–M3; session 2 built M4–M8; session 3 bui
 ## M14 Polish and final report
 - [ ] Polish pass across the app (Impeccable `polish`, with the plugin's detector installed); every screen and state at three sizes per DESIGN §13; Playwright end-to-end flow of SPEC §15; final report below
 
-## Handoff notes for M9–M14 (read before starting)
+## Handoff notes for M12–M14 (read before starting)
 
 **How to resume.** Read `CLAUDE.md`, then this file, then SPEC §8 (cleanup) and §10, and DECISIONS D-017 (soft delete), D-040 (block map), D-046 (gc/scan are 501 stubs in `server/src/api/admin.c`) for M12. Re-run the last step's tests first:
 ```bash
 python3 scripts/check.py          # C tests (ASan), 8-client concurrency test, web unit tests
-cd web && npm run e2e             # builds the app, starts a real nexusd, 18 Playwright tests
+cd web && npm run e2e             # builds the app, starts a real nexusd, 41 Playwright tests (~2 min)
 ```
-Both passed at the M11 commit (check.py; Playwright 41/41). Playwright runs spec files in name order: `foundation`, `m09`, `m10`. `m09` needs an empty store, so name new specs `m12…` and keep them independent of earlier data. For M12: make `/api/admin/gc` and `/api/admin/scan` real, fill `integrity.*` and `cleanup.nextRunAt` in `/api/stats`, and turn the Engine screen's unavailable buttons (`btn--unavailable` in `Engine.tsx`) into real actions with progress (`engine.gc` / `engine.scan` events). No GitHub remote yet; do not push. Commit after each milestone (no Co-Authored-By trailers, CLAUDE.md).
+Both passed at the M11 commit (check.py; Playwright 41/41). Playwright runs spec files in name order: `foundation`, `m09`, `m10`, `m11`. `m09` needs an empty store, so name new specs `m12…` and keep them independent of earlier data. For M12: make `/api/admin/gc` and `/api/admin/scan` real, fill `integrity.*` and `cleanup.nextRunAt` in `/api/stats`, and turn the Engine screen's unavailable buttons (`btn--unavailable` in `Engine.tsx`) into real actions with progress (`engine.gc` / `engine.scan` events). No GitHub remote yet; do not push. Commit after each milestone (no Co-Authored-By trailers, CLAUDE.md).
 
-**Packages and tools already approved and installed:** cJSON (vendored), Geist fonts, `lucide-react`, `@playwright/test` (uses the installed Google Chrome, `channel: 'chrome'`). Still allowed but not installed: `qrcode` (M11). Downloads need the user's OK each time.
+**Session 3 notes (M9–M11).**
+- Every finished screen got an independent design review: a sub-agent ran the Impeccable critique/audit method on the screenshots and source. Every P0/P1 was fixed, and the leftovers are recorded in D-042, D-045, and D-047. The Impeccable *detector script* is not installed, so run it in M14's polish pass if the team installs the plugin.
+- Bugs found by tests this session:
+  - a resumed upload under-reported bytes sent, plus a cancel/chunk race (D-041);
+  - a cJSON data race found by ThreadSanitizer (D-044);
+  - the addresses endpoint listed unreachable IPs (fixed in M11).
+- If a test times out after 15 minutes, check whether the Mac slept (`check.py` with very low CPU use, a 60 s test taking 15 min). Re-run before debugging.
+- The scratch dev-server config for the in-app browser preview is at `/Users/zitiz/pbl/.claude/launch.json`, outside the repo. Playwright does not need it.
 
-**Frontend map (web/src).**
+**Pointers for M12 (cleanup, compaction, integrity).**
+- WAL record types `BLOCK_FREE`, `BLOCK_MOVE`, and `CONTAINER_DROP` and their apply code already exist in `server/src/engine/engine.c` (`apply_record`).
+- `nx_uploads_declares()` protects blocks an open upload has declared. Index entries carry `created_at` (unix seconds) for the `gc_grace_s` rule.
+- `nx_containers_rotate` and `nx_containers_drop` exist for compaction.
+- `/api/stats` already returns `containers.reclaimableBytes`, `liveHistogram`, and `cleanup.pendingBytes`. `integrity.*` and `cleanup.nextRunAt` are `null`/0 placeholders until M12.
+- The nightly 02:00 schedule needs local time. There is no platform function for it yet; add one to `platform.h` (POSIX `localtime_r`, Windows `localtime_s`) rather than calling `<time.h>` thread-unsafely.
+- The background thread (`bg_main` in `server/src/api/app.c`) is the natural place for the schedule.
+- The block map (`api/stats.c`) and the compare cache key off committed state. After compaction moves blocks, the block map's LSN check rebuilds it; compare results hold no locations (locations are looked up per window).
+
+**Packages and tools already approved and installed:** cJSON (vendored), Geist fonts, `lucide-react`, `@playwright/test` (uses the installed Google Chrome, `channel: 'chrome'`). `qrcode` 1.5.4 and `@types/qrcode` (installed in M11 with the user's OK). Every allowed package is now installed; any further download needs the user's OK.
+
+**Frontend map (web/src).** Added in M9–M11:
+- screens `Overview`, `Files`, `Compare`, `Engine`, `Users`;
+- components `BlockField`, `DedupBar`, `Drawer`, `Toast` (`useToast`), `UploadTray`, `JoinCode`, `QrCode`;
+- `app/uploads.tsx` (upload jobs, drag and drop), `app/copy.ts` (every on-screen sentence, unit-tested), `app/motion.ts`, `app/clipboard.ts`;
+- `engine/fingerprint.ts` + `fingerprint.worker.ts` + `upload.ts` (the upload state machine);
+- styles for the new screens in `styles/screens.css`.
+
+From M8:
 - `styles/tokens.css`: the only place for values.
 - `styles/components.css`: buttons, fields, nav, status, menu, banner, skeleton, auth, calm.
 - `api/client.ts`: typed `request()` and `api.*` endpoints. Add new endpoints here.
