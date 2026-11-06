@@ -9,7 +9,7 @@
   font-size: var(--fs-display);
   font-weight: 300;
   line-height: 1;
-  letter-spacing: -0.035em;
+  letter-spacing: var(--tr-display);
   text-wrap: balance;
 }
 
@@ -1089,7 +1089,7 @@ a.row__name:hover {
   font-size: var(--fs-h2-big);
   font-weight: 300;
   line-height: 1.1;
-  letter-spacing: -0.025em;
+  letter-spacing: var(--tr-sentence);
   text-wrap: balance;
 }
 

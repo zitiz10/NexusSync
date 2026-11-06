@@ -124,10 +124,11 @@ Contrast floor: body and meta text at least 4.5:1 against the surface it sits on
 
 - **Geist** for everything; **Geist Mono** only for fingerprints, offsets, LSNs, and the engine event log. Both are OFL-licensed; self-host the woff2 files in `web/public/fonts/` with `font-display: swap`. No runtime Google Fonts (lab networks may have no internet).
 - Global `font-feature-settings: "tnum" 1` so numbers align.
-- Display (Overview headline): `--fs-display`, weight 300, line-height 1.0, letter-spacing -0.035em, `text-wrap: balance`.
-- Page title (h1 on other screens): `--fs-h1`, weight 300, line-height 1.02, letter-spacing -0.035em.
-- Big summary sentence (Compare): `--fs-h2-big`, weight 300, line-height 1.1, letter-spacing -0.025em.
-- Section title (h2): `--fs-h2`, weight 400, letter-spacing -0.01em.
+- Display (Overview headline): `--fs-display`, weight 300, line-height 1.0, letter-spacing `--tr-display` (-0.015em; was -0.035em until M14), `text-wrap: balance`.
+- Page title (h1 on other screens): `--fs-h1`, weight 300, line-height 1.02, letter-spacing `--tr-display` (-0.015em).
+- Big summary sentence (Compare): `--fs-h2-big`, weight 300, line-height 1.1, letter-spacing `--tr-sentence` (-0.01em).
+- Section title (h2): `--fs-h2`, weight 400, letter-spacing `--tr-title` (0).
+- Running text: letter-spacing `--tr-text` (+0.01em), line-height `--lh-text` (1.55). The header keeps Geist's own spacing so it fits one line at compact widths. (M14 font review: the team preferred Geist's weight with the airier spacing of Inter; D-052.)
 - Lead paragraph: `--fs-lead`, line-height 1.6, `--ink-2`, max 34em.
 - Body 16, UI controls 15, small 14, meta 13 (`--ink-3`).
 - No all-caps labels, no letter-spaced eyebrows, no italics for emphasis.
@@ -203,6 +204,7 @@ Icons: `lucide-react`, size 18, `strokeWidth={1.5}`, color inherits. Used sparin
 - Center-left: nav. Students see Overview, Files, Compare. Admins also see Engine and Users. Engine is its own page (fixes the mockup inconsistency).
 - Right: status indicator, then the user menu: initial in a 32 px circle (`--surface-press` fill) and display name; menu holds Theme (Light, Dark, System) and Sign out.
 - Drag-and-drop anywhere in the app opens the upload tray with the dropped files.
+- Below 1024 px the "updated 3 s ago" detail and the display name are hidden, so the nav stays on one line (M14).
 - Phone (< 768 px): row one holds the brand, the status dot with its state word ("Live"), and the avatar alone; row two holds the nav, one line with tighter link padding. The "updated 3 s ago" detail and the display name are hidden.
 - A "Skip to content" link is the first Tab stop.
 

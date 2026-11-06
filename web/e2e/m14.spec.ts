@@ -287,3 +287,22 @@ async function darkPage(browser: Browser): Promise<Page> {
   await admin(page);
   return page;
 }
+
+test('compact widths: the header stays on one line (D-052)', async ({ browser }) => {
+  const ctx = await browser.newContext({ viewport: { width: 1440, height: 900 } });
+  const page = await ctx.newPage();
+  await admin(page);
+  for (const width of [768, 900, 1023, 1024, 1199, 1366]) {
+    await page.setViewportSize({ width, height: 800 });
+    await page.waitForTimeout(150);
+    const tops = await page.locator('.nav a').evaluateAll((as) => as.map((a) => Math.round(a.getBoundingClientRect().top)));
+    expect(new Set(tops).size, `nav on one line at ${width} px`).toBe(1);
+    const name = page.locator('.user__name');
+    if (width >= 1024) {
+      expect(Math.round((await name.boundingBox())!.height), `display name on one line at ${width} px`).toBeLessThan(30);
+    } else {
+      await expect(name).toBeHidden();
+    }
+  }
+  await ctx.close();
+});

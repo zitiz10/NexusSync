@@ -611,7 +611,7 @@
   font-size: var(--fs-h2-big);
   font-weight: 300;
   line-height: 1.1;
-  letter-spacing: -0.025em;
+  letter-spacing: var(--tr-sentence);
   text-wrap: balance;
 }
 
@@ -624,6 +624,16 @@
 
   .shell-header__end {
     gap: var(--s-4);
+  }
+}
+
+/* Narrow compact screens (768-1023, e.g. a 1024x768 projector at a browser
+   zoom, or a half-width window): the nav plus the full status and name do
+   not fit one line, so drop the two details phones drop too (M14 fix). */
+@media (max-width: 1023px) {
+  .user__name,
+  .status__detail {
+    display: none;
   }
 }
 
@@ -665,4 +675,10 @@
   .user__button {
     padding-right: var(--s-1);
   }
+}
+
+/* The header keeps Geist's own spacing: it is sized to fit on one line at
+   compact widths, and the extra text tracking (--tr-text) would wrap it. */
+.shell-header {
+  letter-spacing: 0;
 }

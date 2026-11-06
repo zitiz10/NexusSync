@@ -591,3 +591,14 @@ An independent Impeccable polish review of all 54 final screenshots scored the a
 **Left on purpose:**
 1. **The banner sits about 7 px closer to the headline when offline.** It is a temporary state, and the banner itself is the signal.
 2. **The "Nothing stored yet" empty Overview on a fresh store** is captured by M9 (`web/screenshots/m9/`, which runs on an empty store), not again in M14. M14 shows the student variant: a student with no files on a server that has data.
+
+## D-052 Typography spacing and the compact header (M14, after the font review)
+
+- **Font choice.** Four pairings were compared side by side with real content: Geist (current), Inter + JetBrains Mono, IBM Plex, and Space Grotesk + Source. The team kept **Geist** for its weight, but preferred the airier spacing of Inter. Letter spacing is now held in tokens:
+  - `--tr-display` -0.015em (was -0.035em) for the display and h1;
+  - `--tr-sentence` -0.01em (was -0.025em);
+  - `--tr-title` 0 (was -0.01em);
+  - `--tr-text` +0.01em for running text, with `--lh-text` 1.55 (was 1.5).
+
+  No new fonts were downloaded.
+- **Compact header (a bug found while previewing).** Between about 800 and 1023 px wide, the nav did not fit beside the full status text and display name, so "Users" wrapped and the name split onto two lines. The spacing change was not the cause: the header wrapped at those widths before it. The screenshot sizes (1440, 1366, 390) never hit that range. Below 1024 px the header now drops the same two details as phones. Checked on one line at 768, 900, 1023, 1024, 1199, and 1366 px. The header also keeps the font's own spacing (`letter-spacing: 0`), so it stays sized as before.

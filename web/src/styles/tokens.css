@@ -57,6 +57,13 @@
   --fs-ui: 15px;
   --fs-small: 14px;
   --fs-meta: 13px;
+  /* Letter spacing (M14, after the font review: Geist's weight with more air,
+   like Inter). Big type is tracked in only slightly; text gets a touch more room. */
+  --tr-display: -0.015em;
+  --tr-sentence: -0.01em;
+  --tr-title: 0;
+  --tr-text: 0.01em;
+  --lh-text: 1.55;
   --fs-wordmark: 19px; /* DESIGN §5 */
 
   /* space (4 px base) */
