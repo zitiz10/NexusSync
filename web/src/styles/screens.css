@@ -223,6 +223,10 @@ a.row__name:hover {
   cursor: pointer;
 }
 
+.row__meta-owner {
+  display: none; /* shown below 1200 px, where the owner column is hidden */
+}
+
 .row__size,
 .row__owner {
   font-size: var(--fs-small);
@@ -1449,6 +1453,9 @@ a.row__name:hover {
   .row--file .row__date,
   .row--file .row__owner {
     display: none;
+  }
+  .row__meta-owner {
+    display: inline;
   }
   /* Compact: name, files, status, actions (role shows in the actions'
    * wording; last seen moves out). */

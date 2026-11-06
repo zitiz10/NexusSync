@@ -273,6 +273,11 @@ test('phone: Compare says tap, and the tapped block details come into view', asy
   await page.locator('.blk').last().tap();
   await expect(page.getByTestId('cmp-details')).toBeInViewport({ ratio: 0.3 });
   await page.screenshot({ path: `${DIR}/compare-tapped-390.png`, animations: 'disabled' });
+  // Files as admin below 1200 px: the owner column is hidden, so each row
+  // names its owner in the meta line (two students' dataset.csv look alike).
+  await page.getByRole('link', { name: 'Files', exact: true }).click();
+  await expect(page.getByTestId('file-row').first().locator('.row__meta-owner')).toBeVisible();
+  await expect(page.getByTestId('file-row').first().locator('.row__meta-owner')).toHaveText(/^ · \S/);
   await ctx.close();
 });
 

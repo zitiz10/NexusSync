@@ -385,6 +385,9 @@ function FileRow({ f, mine, canWrite, showOwner, now, selected, onOpen, onDelete
           v{f.version}
           {f.shared ? ' · shared with lab' : ''}
           {!showOwner && !mine ? ` · ${f.ownerName}` : ''}
+          {/* Admins: the owner column is hidden below 1200 px, so the owner
+              moves into this line there (M14 fix). */}
+          {showOwner ? <span className="row__meta-owner"> · {mine ? 'you' : f.ownerName}</span> : null}
         </span>
       </div>
       {showOwner ? <span className="row__owner">{mine ? 'You' : f.ownerName}</span> : null}

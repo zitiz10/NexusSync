@@ -586,6 +586,8 @@ An independent Impeccable polish review of all 54 final screenshots scored the a
   - "SHA‑256" no longer breaks at its hyphen.
   - The phone legend is in two columns, and the phone hero buttons are full width.
 
+- **Files owner on compact screens** (found while showing the app at 800 px, after the review). An admin's list hid the owner column below 1200 px, and the row's meta line left the owner out because it expected the column to show it. So two students' `dataset.csv` looked identical on projectors at 1024 px and on phones. Below 1200 px the meta line now reads "v2 · Riya Sharma"; checked in `m14.spec.ts`.
+
 **Left on purpose:**
 1. **The banner sits about 7 px closer to the headline when offline.** It is a temporary state, and the banner itself is the signal.
 2. **The "Nothing stored yet" empty Overview on a fresh store** is captured by M9 (`web/screenshots/m9/`, which runs on an empty store), not again in M14. M14 shows the student variant: a student with no files on a server that has data.
