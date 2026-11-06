@@ -5,9 +5,9 @@ Resume after an interruption: read `CLAUDE.md`, then this file, re-run the tests
 
 Platforms: macOS (verified locally on Apple Silicon), Linux and Windows (verified in CI once the repo is pushed; see "Open problems").
 
-Sessions so far: session 1 built M1–M3; session 2 built M4–M8; session 3 built M9. **The next session starts at M10** and continues to M14.
+Sessions so far: session 1 built M1–M3; session 2 built M4–M8; session 3 built M9 and M10. **The next session starts at M11** and continues to M14.
 
-**Status (2026-11-06, session 3): M1–M9 done and committed. Next: M10 (Compare versions).** M8 was re-verified at the start of session 3 (`check.py` passes; Playwright 18/18, one test re-run alone after the Mac slept mid-run). Read "Handoff notes for M9–M14" below before starting.
+**Status (2026-11-06, session 3): M1–M10 done and committed. Next: M11 (Engine and Users screens, system states).** M8 was re-verified at the start of session 3 (`check.py` passes; Playwright 18/18, one test re-run alone after the Mac slept mid-run). Read "Handoff notes for M9–M14" below before starting.
 
 ## M1 Scaffold
 - [x] Repo layout per `CLAUDE.md` (plus `server/src/platform/`); module folders fill in from M2
@@ -92,8 +92,8 @@ Sessions so far: session 1 built M1–M3; session 2 built M4–M8; session 3 bui
 - [x] Screenshots of every state at three sizes (`web/screenshots/m9/`, 38 images), independent critique and audit 30/40 with every P1 fixed (D-042); Playwright 27/27 (`npm run e2e`); `check.py` passes (C tests under ASan+UBSan, concurrency, web); ThreadSanitizer clean on upload and server tests
 
 ## M10 Compare versions
-- [ ] Server: `GET /api/compare` with fixed and CDC modes, window, minimap, block details, 5 min cache
-- [ ] Screen per DESIGN §8.5 (defaults to fixed, pickers, window, minimap, hover partners, details, motion)
+- [x] Server: `GET /api/compare` with fixed and CDC modes, window, minimap, block details, 5 min cache (D-043). `test_compare`: a 16-byte insert gives at most 3 new CDC blocks vs exactly 36 matching fixed blocks; the fixed block hash equals the SHA-256 of the first 4 KB; window default and clamping; minimap runs; access 404; nine malformed queries 400. A 6-thread test evicts cache entries in use, clean under ASan and ThreadSanitizer (5 runs). It found a real data race in cJSON's global error, fixed for all server parsing (D-044)
+- [x] Screen per DESIGN §8.5 (defaults to fixed, pickers, window, minimap, hover partners, details, motion). Playwright `e2e/m10.spec.ts` 7/7 (defaults; both modes with real numbers; hover partner and dimming; details with location and "calculated, not stored" note; minimap click and keyboard; Escape; Files drawer link; error with Retry; dark; reduced motion). Screenshots at three sizes in `web/screenshots/m10/`. Independent review 26/40 with every P1 fixed (D-045). Full Playwright 34/34; `check.py` passes
 
 ## M11 Engine and Users screens, system states
 - [ ] Server: remaining `/api/admin/*` (users, events, recoveries, addresses, gc, scan; join code is done)
@@ -111,12 +111,12 @@ Sessions so far: session 1 built M1–M3; session 2 built M4–M8; session 3 bui
 
 ## Handoff notes for M9–M14 (read before starting)
 
-**How to resume.** Read `CLAUDE.md`, then this file, then `DESIGN.md` §8.5 and SPEC §12 "Compare" for M10. Re-run the last step's tests first:
+**How to resume.** Read `CLAUDE.md`, then this file, then `DESIGN.md` §8.6–§8.8 and SPEC §12 "Admin" for M11. Re-run the last step's tests first:
 ```bash
 python3 scripts/check.py          # C tests (ASan), 8-client concurrency test, web unit tests
 cd web && npm run e2e             # builds the app, starts a real nexusd, 18 Playwright tests
 ```
-Both passed at the M9 commit (check.py; Playwright 27/27). No GitHub remote yet; do not push. Commit after each milestone (no Co-Authored-By trailers, CLAUDE.md).
+Both passed at the M10 commit (check.py; Playwright 34/34). Playwright runs spec files in name order: `foundation`, `m09`, `m10`. `m09` needs an empty store, so name new specs `m11…` and keep them independent of earlier data. No GitHub remote yet; do not push. Commit after each milestone (no Co-Authored-By trailers, CLAUDE.md).
 
 **Packages and tools already approved and installed:** cJSON (vendored), Geist fonts, `lucide-react`, `@playwright/test` (uses the installed Google Chrome, `channel: 'chrome'`). Still allowed but not installed: `qrcode` (M11). Downloads need the user's OK each time.
 
@@ -150,7 +150,7 @@ Both passed at the M9 commit (check.py; Playwright 27/27). No GitHub remote yet;
 - Shared UI: `components/Drawer.tsx`, `Toast.tsx` (`useToast`), `DedupBar.tsx`, `BlockField.tsx`; `app/copy.ts` (sentences), `app/motion.ts` (`useTween`), `app/clipboard.ts` (works on plain-HTTP LAN addresses); styles in `styles/screens.css`.
 - `e2e/m9.spec.ts` shows how to drive uploads (`setInputFiles` on `[data-testid=upload-input]`) and how to produce failures for real.
 
-**Open design questions for the team:** D-039 (offline dimming contrast; live recovery counts, scheduled in M11) and D-042 item 1 (tile shades below the 3:1 graphics floor).
+**Open design questions for the team:** D-039 (offline dimming contrast; live recovery counts, scheduled in M11), D-042 item 1 (tile shades below the 3:1 graphics floor), and D-045 item 1 (dark `--shared` vs `--new`, 1.19:1).
 
 ## Open problems
 - **Windows and Linux not yet verified.** `plat_win32.c` and the Linux paths of `plat_posix.c` (getrandom, MSG_NOSIGNAL) have not been compiled. They will be once the repo is pushed to GitHub and CI runs, or when a teammate runs `make -C server test` on a Windows laptop (MSYS2) or Linux.

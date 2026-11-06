@@ -5,6 +5,7 @@
 #include "api/files.h"
 #include "api/stats.h"
 #include "cJSON.h"
+#include "util/json_in.h"
 #include "crypto/sha256.h"
 #include "engine/chunk.h"
 #include "util/bytes.h"
@@ -242,7 +243,7 @@ static cJSON *json_body(nx_ctx *c)
         nx_reply_error(c, 415, "unsupported_media_type", "Send JSON (Content-Type: application/json).");
         return NULL;
     }
-    cJSON *j = c->body_len ? cJSON_ParseWithLength((const char *)c->body, c->body_len) : NULL;
+    cJSON *j = c->body_len ? nx_json_parse(c->body, c->body_len) : NULL;
     if (!j || !cJSON_IsObject(j)) {
         cJSON_Delete(j);
         nx_reply_error(c, 400, "invalid_json", "The request body is not a JSON object.");

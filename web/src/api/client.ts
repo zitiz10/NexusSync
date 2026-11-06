@@ -9,6 +9,7 @@
 //   are told so the app can return to the sign-in screen (DESIGN §8.8).
 import type {
   BlockMap,
+  CompareResult,
   ChunksReply,
   CommitReply,
   ErrorBody,
@@ -131,6 +132,11 @@ export const api = {
   deleteFile: (id: number) => request<void>(`/api/files/${id}`, { method: 'DELETE' }),
   /** A plain link: the browser downloads with the session cookie. */
   contentUrl: (id: number) => `/api/files/${id}/content`,
+  compare: (a: number, b: number, mode: 'fixed' | 'cdc', from?: number, count = 32, signal?: AbortSignal) =>
+    request<CompareResult>(
+      `/api/compare?a=${a}&b=${b}&mode=${mode}&count=${count}${from === undefined ? '' : `&from=${from}`}`,
+      signal ? { signal } : {},
+    ),
   stats: () => request<Stats>('/api/stats'),
   blockmap: () => request<BlockMap>('/api/blockmap?tiles=384'),
   fileTiles: (id: number, signal?: AbortSignal) =>

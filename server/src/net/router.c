@@ -2,6 +2,7 @@
 #include "net/router.h"
 
 #include "api/auth.h"
+#include "api/compare.h"
 #include "api/files.h"
 #include "api/stats.h"
 #include "api/uploads.h"
@@ -241,6 +242,7 @@ static const route ROUTES[] = {
     {"POST", "/api/admin/checkpoint", h_admin_checkpoint, R_ADMIN},
     {"GET", "/api/stats", nx_h_stats, R_AUTH},
     {"GET", "/api/blockmap", nx_h_blockmap, R_AUTH},
+    {"GET", "/api/compare", nx_h_compare, R_AUTH},
     {"GET", "/api/files", nx_h_files_list, R_AUTH},
     {"GET", "/api/files/{id}", nx_h_file_get, R_AUTH},
     {"PATCH", "/api/files/{id}", nx_h_file_patch, R_AUTH},

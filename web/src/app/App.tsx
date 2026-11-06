@@ -7,7 +7,8 @@ import { BrowserRouter, Navigate, Route, Routes, useLocation } from 'react-route
 import { Join } from '../screens/Join';
 import { Files } from '../screens/Files';
 import { Overview } from '../screens/Overview';
-import { Compare, Engine, NotFound, Users, useTitle } from '../screens/Pages';
+import { Compare } from '../screens/Compare';
+import { Engine, NotFound, Users, useTitle } from '../screens/Pages';
 import { Shell, ShellSkeleton } from '../screens/Shell';
 import { SignIn } from '../screens/SignIn';
 import { Recovered, Recovering, Unavailable, Unreachable } from '../screens/SystemStates';

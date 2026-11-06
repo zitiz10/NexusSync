@@ -437,3 +437,52 @@ An independent review (sub-agent, Impeccable critique and audit method, all 38 s
 2. **Toast and tray overlap on phones** for up to 6 s: the toast covers the tray's last row. This is rare (delete and upload at once) and goes away by itself.
 3. **Below 1200 px the Files list drops the date column, and below 768 px the size column.** This keeps names readable on a 1024 px projector. Dates remain in the drawer.
 4. **Picking a third version in the drawer** replaces the oldest pick without a message. Compare (M10) shows which two are compared.
+
+## D-043 What Compare computes, and how (M10)
+
+**Which blocks.** Each side is cut with the method the screen asks for. If the file was stored with that method, its blocks come straight from its recipe, and each block also knows where it is stored (container, offset, refcount). Otherwise the server reads the file through the engine (every block verified, as for a download), cuts it with the requested chunker, and hashes each piece; those blocks have `stored: null`. SPEC §12 names only the two common cases (CDC from recipes, fixed by re-chunking). This rule covers them and also files uploaded with `nexus put --fixed`.
+
+**What "reused" means here.** Compare tells the story of version 2 against version 1. A version 2 block is *reused* when version 1 has a block with the same hash; `matchIndex` is the first such block in version 1. For a version 1 block, `reused` means version 2 kept it. `sentBytes` adds up version 2's new blocks, counting each distinct new block once (an upload sends a repeated new block once). Options considered: "already anywhere on the server" (what the upload really paid). Rejected for this screen: it would mix in other people's files and hide the chunking lesson. The real upload cost stays in the Files drawer.
+
+**Window.** `count` is 1–64 (default 32). Without `from`, the window starts 3 blocks before the first difference (DESIGN §8.5); the response says where it started. The minimap is `[[value, run], ...]` over version 2's blocks (1 = reused, 0 = new). For a 1,500-block file that is a few runs instead of 1,500 numbers.
+
+**"Shared by".** The index stores a refcount, the number of references across all committed recipes; one file can reference a block twice. Counting distinct files would mean reading every recipe on each click. The details panel therefore says "Used 6 times across stored files", not "Shared by 6 files" (DESIGN §8.5 updated).
+
+**Cost and cache.** Fixed mode reads both files in full. Results (both block lists and the matches, not the stored locations, which are looked up per window) are cached per (a, b, mode) for 5 minutes, up to 4 entries, oldest first out. Committed files never change, so a cached result stays right; access is checked on every request before the cache is used. Comparing files over 1 GiB is refused (422 `too_large_to_compare`), so one request cannot keep a worker busy for minutes.
+
+## D-044 Thread-safe JSON parsing (M10)
+
+**Found by ThreadSanitizer** in M10's concurrent compare test. cJSON writes a global "last error" position at the start of every parse, so two worker threads parsing request bodies at once race on it. The server never reads that position, so no wrong answer could result, but a data race is undefined behaviour in C11, and the M6/M7 tests never parsed JSON from two threads at once.
+
+**Options.**
+- (a) Edit the vendored cJSON to make the variable thread-local. Rejected: a local change to a vendored file is easy to lose on an update.
+- (b) Wrap every server-side parse in a short mutex.
+
+**Chosen: (b).** `util/json_in.c` provides `nx_json_parse`, and auth, files, and uploads use it. Bodies are capped at 1 MB, so the lock is held for microseconds. It is a leaf lock (SPEC §9). The single-threaded CLI keeps calling cJSON directly.
+
+## D-045 M10 design review: what was fixed, what is left (M10)
+
+An independent review (Impeccable critique method, 16 screenshots plus source, contrast computed from the tokens) scored Compare **26/40**.
+
+**P1, fixed and covered by Playwright:**
+1. Fixed mode contradicted itself: the legend said "Already stored" while the details said "Not stored". Words now depend on the mode ("Matches version 1" / "Different from version 1" in fixed mode).
+2. Contrast: version 1 blocks (1.42:1) and new blocks (1.80:1) against the panel. Both get a 1 px `--line-input` edge, about 3.4:1. The legend swatches match. Minimap runs now have 1 px gaps, so dark-mode blue and peach never touch.
+3. The error state was a dead end: a skeleton stuck under the error, and no Retry. The panel now hides, Retry appears, and the error clears when the pair or mode changes.
+4. After a window move, a strip could lose its only Tab stop. It falls back to the first block.
+5. On phones the two strips scrolled separately and clipped mid-block. Phones now request 20 blocks per window, and both strips fit.
+
+**P2/P3 fixed:**
+- The hover label is no longer a live region (it was chatty).
+- `aria-current` replaces `aria-pressed`, and Escape clears the selection.
+- The hovered block gets a ring, and the label names the version 1 block.
+- A legend entry was added for version 1 blocks.
+- The summary wording is mode-neutral, with no hard-coded "Only".
+- The fixed explanation is conditional.
+- The minimap has a 24 px hit area and responds to Up/Down.
+- New blocks no longer wait for reused blocks that are not in the window.
+
+**Left on purpose:**
+1. **Dark-mode `--shared` vs `--new` is 1.19:1.** This is a global token decision (the same pair is used across the app). Blocks are separated by a 2 px gap of panel surface, and each passes 3:1 against the surface, so this only affects adjacency. Added to the team's open token questions with D-042 item 1.
+2. **The minimap window's side edges** are `--ink` over blue at 2.1:1. The top and bottom edges sit on the panel and pass, so the window stays findable.
+3. **Both pickers can select the same file.** It is a valid comparison (everything matches), and the summary says so.
+4. **The segmented control animates `color`.** DESIGN §9 lists color among hover transitions, so this is allowed.

@@ -9,7 +9,7 @@ export function useTitle(title: string): void {
 }
 
 /**
- * Screens that arrive in M10 and M11 (SPEC §14). Until then each says so
+ * Screens that arrive in M11 (SPEC §14). Until then each says so
  * plainly; no placeholder numbers (CLAUDE.md: every number on screen comes
  * from the server).
  */
@@ -23,7 +23,6 @@ function Pending({ title }: { title: string }) {
   );
 }
 
-export const Compare = () => <Pending title="Compare" />;
 export const Engine = () => <Pending title="Engine" />;
 export const Users = () => <Pending title="Users" />;
 

@@ -14,6 +14,8 @@
  *     paging; detail with versions and block counts; delete; fsck clean
  */
 #include "api/stats.h"
+#include "cJSON.h"
+#include "util/json_in.h"
 #include "crypto/sha256.h"
 #include "engine/chunk.h"
 #include "nx_server_util.h"
@@ -820,11 +822,222 @@ static void test_stats_and_blockmap(void)
     fx_stop(&f);
 }
 
+
+/* GET /api/compare (M10, D-043): a file and an edited copy compared with
+ * content-defined blocks (most of version 2 found in version 1) and with
+ * fixed 4 KB blocks (nothing after the edit matches), the window, the
+ * minimap, access rules, and bad parameters. */
+static cJSON *compare_json(fx *f, const char *cookie, const char *query, int *status)
+{
+    char path[256];
+    snprintf(path, sizeof path, "/api/compare?%s", query);
+    big r;
+    if (call(f->port, "GET", path, cookie, NULL, NULL, 0, &r) != 0) {
+        *status = -1;
+        return NULL;
+    }
+    *status = r.status;
+    cJSON *j = nx_json_parse(r.body, r.len); /* thread-safe parse (D-044) */
+    big_free(&r);
+    return j;
+}
+
+static uint64_t jnum(const cJSON *o, const char *path)
+{
+    /* "totals.b.reused" style lookup; no strtok (it is not thread-safe and
+     * the concurrency test calls this from six threads). */
+    const cJSON *cur = o;
+    const char *p = path;
+    while (cur && *p) {
+        const char *dot = strchr(p, '.');
+        size_t n = dot ? (size_t)(dot - p) : strlen(p);
+        char key[64];
+        if (n >= sizeof key)
+            return UINT64_MAX;
+        memcpy(key, p, n);
+        key[n] = '\0';
+        cur = cJSON_GetObjectItemCaseSensitive(cur, key);
+        p += n + (dot ? 1 : 0);
+    }
+    return cJSON_IsNumber(cur) ? (uint64_t)cur->valuedouble : UINT64_MAX;
+}
+
+/* Sum of minimap runs, and how many runs. */
+static uint64_t minimap_sum(const cJSON *j, size_t *runs, uint64_t *ones)
+{
+    const cJSON *m = cJSON_GetObjectItemCaseSensitive(j, "minimap"), *pair;
+    uint64_t sum = 0;
+    *runs = 0;
+    *ones = 0;
+    cJSON_ArrayForEach(pair, m)
+    {
+        uint64_t v = (uint64_t)cJSON_GetArrayItem(pair, 0)->valuedouble;
+        uint64_t n = (uint64_t)cJSON_GetArrayItem(pair, 1)->valuedouble;
+        sum += n;
+        if (v)
+            *ones += n;
+        (*runs)++;
+    }
+    return sum;
+}
+
+typedef struct {
+    fx *f;
+    const char *cookie;
+    char q[160];
+    bool ok;
+} compare_worker;
+
+/* Asks the same comparison 15 times; the answer must never change. */
+static void *compare_thread(void *arg)
+{
+    compare_worker *w = arg;
+    uint64_t want = UINT64_MAX;
+    for (int i = 0; i < 15 && w->ok; i++) {
+        int st;
+        cJSON *j = compare_json(w->f, w->cookie, w->q, &st);
+        uint64_t got = j ? jnum(j, "totals.b.reused") * 1000003u + jnum(j, "totals.b.sentBytes") : 0;
+        if (st != 200 || (want != UINT64_MAX && got != want))
+            w->ok = false;
+        want = got;
+        cJSON_Delete(j);
+    }
+    return NULL;
+}
+
+static void test_compare(void)
+{
+    fx f;
+    REQUIRE(fx_start(&f, "up_compare", true, 4, 16) == 0);
+    char riya[300], kabir[300];
+    join(&f, "riya", riya);
+    join(&f, "kabir", kabir);
+    nx_splitmix rng = {12};
+    size_t len = 300000;
+    uint8_t *d = content(&rng, len);
+    uint8_t *e = malloc(len + 16);
+    memcpy(e, d, 150000);
+    memcpy(e + 150000, "edited,row,here\n", 16);
+    memcpy(e + 150016, d + 150000, len - 150000);
+    uint64_t v1, v2, sent;
+    REQUIRE(upload(&f, riya, "notes.csv", d, len, NULL, &v1, &sent) == 201);
+    REQUIRE(upload(&f, riya, "notes.csv", e, len + 16, NULL, &v2, &sent) == 201);
+    char q[160];
+    int st;
+
+    /* Content-defined: only the blocks around the edit are new. */
+    snprintf(q, sizeof q, "a=%" PRIu64 "&b=%" PRIu64 "&mode=cdc", v1, v2);
+    cJSON *j = compare_json(&f, riya, q, &st);
+    REQUIRE(st == 200 && j);
+    uint64_t nb = jnum(j, "totals.b.chunks"), reused = jnum(j, "totals.b.reused");
+    uint64_t first = jnum(j, "firstDifference"), cdc_sent = jnum(j, "totals.b.sentBytes");
+    fprintf(stderr, "    cdc: %" PRIu64 " of %" PRIu64 " blocks reused, %" PRIu64 " bytes new, first difference %" PRIu64 "\n",
+            reused, nb, cdc_sent, first);
+    CHECK(jnum(j, "totals.a.bytes") == len && jnum(j, "totals.b.bytes") == len + 16);
+    CHECK(nb - reused >= 1 && nb - reused <= 3 && cdc_sent < 40000 && cdc_sent > 0);
+    CHECK(first > 10 && first < nb - 10); /* the edit is in the middle */
+    CHECK(jnum(j, "window.from") == first - 3 && jnum(j, "window.count") == 32);
+    const cJSON *wb = cJSON_GetObjectItemCaseSensitive(cJSON_GetObjectItemCaseSensitive(j, "window"), "b");
+    CHECK(cJSON_GetArraySize(wb) == 32);
+    const cJSON *b0 = cJSON_GetArrayItem(wb, 0), *b3 = cJSON_GetArrayItem(wb, 3);
+    CHECK(cJSON_IsTrue(cJSON_GetObjectItemCaseSensitive(b0, "reused")) &&
+          cJSON_IsNumber(cJSON_GetObjectItemCaseSensitive(b0, "matchIndex")));
+    CHECK(cJSON_IsFalse(cJSON_GetObjectItemCaseSensitive(b3, "reused")) &&
+          cJSON_IsNull(cJSON_GetObjectItemCaseSensitive(b3, "matchIndex")));
+    /* Stored blocks know where they live; a block in both versions is used twice. */
+    CHECK(jnum(b0, "stored.sharedBy") == 2 && jnum(b3, "stored.sharedBy") == 1 &&
+          jnum(b0, "stored.containerId") >= 1);
+    size_t runs;
+    uint64_t ones;
+    CHECK(minimap_sum(j, &runs, &ones) == nb && ones == reused && runs >= 3 && runs <= 5);
+    cJSON_Delete(j);
+
+    /* Fixed 4 KB: every block after the 16-byte insert has moved, so
+     * nothing after it matches; computed blocks are not stored. */
+    snprintf(q, sizeof q, "a=%" PRIu64 "&b=%" PRIu64 "&mode=fixed&from=0&count=64", v1, v2);
+    j = compare_json(&f, riya, q, &st);
+    REQUIRE(st == 200 && j);
+    uint64_t fnb = jnum(j, "totals.b.chunks"), freused = jnum(j, "totals.b.reused");
+    fprintf(stderr, "    fixed: %" PRIu64 " of %" PRIu64 " blocks reused, %" PRIu64 " bytes new\n", freused, fnb,
+            jnum(j, "totals.b.sentBytes"));
+    CHECK(fnb == (len + 16 + 4095) / 4096 && freused == 150000 / 4096); /* 36 whole blocks before the edit */
+    CHECK(jnum(j, "firstDifference") == 150000 / 4096 && jnum(j, "totals.b.sentBytes") > len / 2);
+    CHECK(jnum(j, "window.from") == 0 && jnum(j, "window.count") == 64);
+    const cJSON *wa = cJSON_GetObjectItemCaseSensitive(cJSON_GetObjectItemCaseSensitive(j, "window"), "a");
+    const cJSON *a0 = cJSON_GetArrayItem(wa, 0);
+    uint8_t h[32];
+    char hex[65];
+    nx_sha256(d, 4096, h);
+    nx_hex(h, 32, hex);
+    CHECK(jnum(a0, "size") == 4096 && strcmp(cJSON_GetObjectItemCaseSensitive(a0, "sha256")->valuestring, hex) == 0 &&
+          cJSON_IsNull(cJSON_GetObjectItemCaseSensitive(a0, "stored")));
+    cJSON_Delete(j);
+    /* The same request again comes from the cache and says the same. */
+    j = compare_json(&f, riya, q, &st);
+    CHECK(st == 200 && jnum(j, "totals.b.reused") == freused);
+    cJSON_Delete(j);
+
+    /* A file against itself: everything matches, no difference. */
+    snprintf(q, sizeof q, "a=%" PRIu64 "&b=%" PRIu64, v1, v1);
+    j = compare_json(&f, riya, q, &st);
+    CHECK(st == 200 && cJSON_IsNull(cJSON_GetObjectItemCaseSensitive(j, "firstDifference")) &&
+          jnum(j, "totals.b.sentBytes") == 0 && strcmp(cJSON_GetObjectItemCaseSensitive(j, "mode")->valuestring, "cdc") == 0);
+    CHECK(minimap_sum(j, &runs, &ones) == jnum(j, "totals.b.chunks") && runs == 1);
+    cJSON_Delete(j);
+
+    /* A window past the end is pulled back to the last full window. */
+    snprintf(q, sizeof q, "a=%" PRIu64 "&b=%" PRIu64 "&from=100000", v1, v2);
+    j = compare_json(&f, riya, q, &st);
+    CHECK(st == 200 && jnum(j, "window.from") == nb - 32);
+    cJSON_Delete(j);
+
+    /* Access: Kabir cannot read Riya's files: 404, as for missing ids. */
+    snprintf(q, sizeof q, "a=%" PRIu64 "&b=%" PRIu64, v1, v2);
+    j = compare_json(&f, kabir, q, &st);
+    CHECK(st == 404);
+    cJSON_Delete(j);
+    snprintf(q, sizeof q, "a=%" PRIu64 "&b=999", v1);
+    j = compare_json(&f, riya, q, &st);
+    CHECK(st == 404);
+    cJSON_Delete(j);
+    static const char *bad[] = {"a=1", "b=2", "a=0&b=1", "a=x&b=1", "a=1&b=2&mode=foo", "a=1&b=2&count=0",
+                                "a=1&b=2&count=65", "a=1&b=2&from=-1", "a=1&b=2&from=1x"};
+    for (size_t i = 0; i < sizeof bad / sizeof bad[0]; i++) {
+        j = compare_json(&f, riya, bad[i], &st);
+        CHECK(st == 400);
+        cJSON_Delete(j);
+    }
+    j = compare_json(&f, NULL, q, &st);
+    CHECK(st == 401);
+    cJSON_Delete(j);
+    /* Concurrency: 6 threads ask for 6 different comparisons (more than the
+     * 4 cache slots), so results are evicted while other requests still use
+     * them. Every answer must stay right (run under ASan and TSan). */
+    compare_worker w[6];
+    pthread_t th[6];
+    for (int i = 0; i < 6; i++) {
+        w[i] = (compare_worker){.f = &f, .cookie = riya, .ok = true};
+        snprintf(w[i].q, sizeof w[i].q, "a=%" PRIu64 "&b=%" PRIu64 "&mode=%s", i < 3 ? v1 : v2,
+                 i % 3 == 0 ? v1 : v2, i % 2 ? "fixed" : "cdc");
+        REQUIRE(pthread_create(&th[i], NULL, compare_thread, &w[i]) == 0);
+    }
+    for (int i = 0; i < 6; i++) {
+        pthread_join(th[i], NULL);
+        CHECK(w[i].ok);
+    }
+    nx_fsck_report fr;
+    CHECK(nx_engine_fsck(f.app->engine, &fr) == 0);
+    free(d);
+    free(e);
+    fx_stop(&f);
+}
+
 static const nx_test_case TESTS[] = {
     NX_CASE(test_protocol_and_validation),
     NX_CASE(test_dedup_versions_resume),
     NX_CASE(test_files_access_and_listing),
     NX_CASE(test_stats_and_blockmap),
+    NX_CASE(test_compare),
 };
 
 int main(int argc, char **argv)

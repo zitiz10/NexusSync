@@ -128,6 +128,21 @@
   --col-size: 112px; /* Files: size column */
   --col-date: 120px;
   --col-bar: 220px;
+  /* M10: Compare (DESIGN §8.5, §9) */
+  --block-h: 40px;
+  --block-min: 10px; /* tiny last blocks stay hoverable */
+  --block-gap: 2px;
+  --minimap-h: 8px;
+  --t-wipe: 650ms; /* version 1 blocks wipe in */
+  --stagger-wipe: 22ms;
+  --t-rise: 900ms; /* version 2 reused blocks rise into place */
+  --t-rise-start: 280ms;
+  --stagger-rise: 24ms;
+  --t-new-gap: 200ms; /* pause before new blocks arrive */
+  --stagger-new: 40ms;
+  --t-grow: 600ms; /* block width change between modes */
+  --rise: 16px;
+  --details-w: 400px;
   --col-actions: calc(3 * var(--ctl-h) + 2 * var(--s-1)); /* Download, Compare, More */
 }
 

@@ -823,6 +823,286 @@ a.row__name:hover {
   color: var(--ink);
 }
 
+/* ---- Compare (DESIGN §8.5) ---------------------------------------------------------------------- */
+
+.page-head--compare {
+  gap: var(--s-8);
+  padding-bottom: var(--s-8);
+  border-bottom: 0;
+}
+
+.pickers {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--s-4) var(--s-6);
+}
+
+.picker {
+  flex: 1 1 280px;
+  max-width: 420px;
+}
+
+.cmp-panel {
+  display: grid;
+  gap: var(--s-6);
+  padding: var(--s-8);
+  border-radius: var(--r-panel);
+  background: var(--surface);
+}
+
+.cmp-skeleton {
+  display: grid;
+  gap: var(--s-8);
+}
+
+.skeleton--strip {
+  height: var(--block-h);
+  width: 100%;
+}
+
+.strips {
+  display: grid;
+  gap: var(--s-6);
+}
+
+.strip-row,
+.minimap-row {
+  display: grid;
+  grid-template-columns: var(--s-24) minmax(0, 1fr);
+  align-items: center;
+  gap: var(--s-2) var(--s-4);
+}
+
+.strip-row__label {
+  font-size: var(--fs-small);
+  color: var(--ink-2);
+}
+
+.strip-row__note {
+  grid-column: 2;
+  min-height: 1.4em; /* the label changes on hover; nothing jumps */
+}
+
+.strip-scroll {
+  overflow-x: auto; /* the one horizontal scroller DESIGN §4 allows */
+  padding: var(--s-2); /* room for focus and selection rings */
+  margin: calc(-1 * var(--s-2));
+}
+
+.strip {
+  display: flex;
+  gap: var(--block-gap);
+  /* --n: blocks in the window (32, or 20 on phones so both strips fit). */
+  min-width: calc(var(--n, 32) * var(--block-min) + (var(--n, 32) - 1) * var(--block-gap));
+}
+
+.blk {
+  /* A 1 px edge in --line-input (3:1 or more against the panel) for blocks
+   * whose fill alone is too faint (DESIGN §2 graphics floor). */
+  --edge: transparent;
+  --ring: 0 0 0 0 transparent;
+  box-shadow:
+    inset 0 0 0 1px var(--edge),
+    var(--ring);
+  flex-basis: 0;
+  min-width: var(--block-min);
+  height: var(--block-h);
+  padding: 0;
+  border: 0;
+  border-radius: var(--r-block);
+  cursor: pointer;
+  transition:
+    background-color var(--t-micro) var(--ease-out),
+    flex-grow var(--t-grow) var(--ease-out);
+}
+
+.blk--v1 {
+  --edge: var(--line-input);
+  background: var(--v1-block);
+}
+
+.blk--v1.blk--dim {
+  background: var(--v1-dim);
+}
+
+.blk--v1.blk--partner {
+  --edge: var(--shared);
+  background: var(--shared);
+}
+
+.blk--reused {
+  background: var(--shared);
+}
+
+.blk--new {
+  --edge: var(--line-input);
+  background: var(--new);
+}
+
+/* The hovered version 2 block, so "Matches version 1 block N" has a pair. */
+.blk--hover {
+  --edge: var(--ink);
+  box-shadow: inset 0 0 0 2px var(--edge);
+}
+
+.blk--selected {
+  /* A ring, not an outline: the global :focus:not(:focus-visible) rule
+   * removes outlines after a mouse click, and selection must stay visible. */
+  box-shadow:
+    inset 0 0 0 1px var(--edge),
+    0 0 0 2px var(--surface),
+    0 0 0 4px var(--ink);
+}
+
+/* Entrance on load and mode change only (DESIGN §9): version 1 wipes in
+ * left to right, reused version 2 blocks rise into place, new ones last. */
+.strips--enter .blk--v1 {
+  transform-origin: left center;
+  animation: blk-wipe var(--t-wipe) var(--ease-out) backwards;
+  animation-delay: calc(var(--i) * var(--stagger-wipe));
+}
+
+.strips--enter .blk--reused {
+  animation: blk-rise var(--t-rise) var(--ease-emph) backwards;
+  animation-delay: calc(var(--t-rise-start) + var(--k) * var(--stagger-rise));
+}
+
+.strips--enter .blk--new {
+  animation: blk-rise var(--t-rise) var(--ease-emph) backwards;
+  /* After the reused blocks (if any) have risen, plus a pause. */
+  animation-delay: calc(
+    var(--t-rise-start) + min(var(--rn), 1) * (max(var(--rn) - 1, 0) * var(--stagger-rise) + var(--t-rise)) +
+      var(--t-new-gap) + var(--k) * var(--stagger-new)
+  );
+}
+
+@keyframes blk-wipe {
+  from {
+    transform: scaleX(0);
+  }
+}
+
+@keyframes blk-rise {
+  from {
+    opacity: 0;
+    transform: translateY(var(--rise));
+  }
+}
+
+.minimap {
+  position: relative;
+  display: flex;
+  gap: 1px; /* runs stay apart where blue and peach are close in dark mode */
+  height: var(--minimap-h);
+  border-radius: var(--r-bar);
+  cursor: pointer;
+}
+
+.minimap::before {
+  content: "";
+  position: absolute;
+  inset: calc(-1 * var(--s-2)) 0; /* a 24 px tall click target (WCAG 2.5.8) */
+}
+
+.minimap__run {
+  flex-basis: 0;
+  min-width: 1px;
+}
+
+.minimap__run:first-of-type {
+  border-radius: var(--r-bar) 0 0 var(--r-bar);
+}
+
+.minimap__run:nth-last-of-type(2) {
+  border-radius: 0 var(--r-bar) var(--r-bar) 0;
+}
+
+.minimap__run--shared {
+  background: var(--shared);
+}
+
+.minimap__run--new {
+  background: var(--new);
+}
+
+.minimap__window {
+  position: absolute;
+  top: calc(-1 * var(--s-1));
+  bottom: calc(-1 * var(--s-1));
+  min-width: var(--s-1);
+  border: var(--tile-outline) solid var(--ink);
+  border-radius: var(--r-tile);
+  pointer-events: none;
+}
+
+.cmp-foot {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  gap: var(--s-2) var(--s-6);
+}
+
+.legend__swatch--v1 {
+  background: var(--v1-block);
+  box-shadow: inset 0 0 0 1px var(--line-input);
+}
+
+.legend__swatch--new {
+  box-shadow: inset 0 0 0 1px var(--line-input);
+}
+
+.legend__swatch--shared {
+  background: var(--shared);
+}
+
+.legend__swatch--new {
+  background: var(--new);
+}
+
+.cmp-lower {
+  display: grid;
+  gap: var(--s-10) var(--s-14);
+  padding-top: var(--s-12);
+}
+
+@media (min-width: 1200px) {
+  .cmp-lower {
+    grid-template-columns: minmax(0, 1fr) var(--details-w);
+  }
+}
+
+.cmp-summary {
+  display: grid;
+  gap: var(--s-6);
+  align-content: start;
+}
+
+.big-sentence {
+  font-size: var(--fs-h2-big);
+  font-weight: 300;
+  line-height: 1.1;
+  letter-spacing: -0.025em;
+  text-wrap: balance;
+}
+
+.big-sentence__second {
+  display: block;
+}
+
+.cmp-details {
+  display: grid;
+  gap: var(--s-4);
+  align-content: start;
+}
+
+.cmp-details__title {
+  font-size: var(--fs-h2);
+}
+
+.cmp-details__note {
+  line-height: 1.6;
+}
+
 /* ---- compact and phone --------------------------------------------------------------------------- */
 
 @media (max-width: 1199px) {
@@ -881,12 +1161,23 @@ a.row__name:hover {
   .segmented__btn {
     padding: 0 var(--s-3);
   }
+  .cmp-panel {
+    padding: var(--s-5);
+  }
+  .strip-row,
+  .minimap-row {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .strip-row__note {
+    grid-column: 1;
+  }
 }
 
 /* ---- reduced motion (DESIGN §9) ------------------------------------------------------------------ */
 
 @media (prefers-reduced-motion: reduce) {
   .bf--enter .tile,
+  .strips--enter .blk,
   .tile--pulse,
   .drawer,
   .drawer--closing,
@@ -895,6 +1186,7 @@ a.row__name:hover {
     animation: none;
   }
   .tile,
+  .blk,
   .dedup__fill,
   .dedup__sent {
     transition: none;

@@ -2,6 +2,7 @@
 #include "api/app.h"
 
 #include "api/auth.h"
+#include "api/compare.h"
 #include "api/stats.h"
 #include "api/uploads.h"
 #include "util/json_out.h"
@@ -125,11 +126,13 @@ int nx_app_create(const nx_config *cfg, nx_app **out)
     snprintf(app->join_code, sizeof app->join_code, "%.8s", code);
     if (nx_auth_create(cfg->session_ttl_s, cfg->data_dir, &app->auth) != 0 ||
         nx_uploads_create(&app->uploads) != 0 || nx_stats_create(&app->stats) != 0 ||
+        nx_compare_create(&app->compare) != 0 ||
         nx_hub_create(&app->hub) != 0)
         goto fail;
     *out = app;
     return 0;
 fail:
+    nx_compare_destroy(app->compare);
     nx_stats_destroy(app->stats);
     nx_uploads_destroy(app->uploads);
     nx_auth_destroy(app->auth);
@@ -221,6 +224,7 @@ void nx_app_destroy(nx_app *app)
         LOG_ERROR("app", "final checkpoint failed; the next start recovers from the log");
     nx_uploads_destroy(app->uploads);
     nx_stats_destroy(app->stats);
+    nx_compare_destroy(app->compare);
     nx_auth_destroy(app->auth);
     pthread_mutex_destroy(&app->join_mu);
     free(app);

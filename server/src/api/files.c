@@ -2,6 +2,7 @@
 #include "api/files.h"
 
 #include "cJSON.h"
+#include "util/json_in.h"
 #include "crypto/sha256.h"
 #include "util/hmap.h"
 #include "util/log.h"
@@ -430,7 +431,7 @@ void nx_h_file_patch(nx_ctx *c)
     }
     const char *ct = nx_http_get_header(c->req, "content-type");
     cJSON *b = ct && strncmp(ct, "application/json", 16) == 0 && c->body_len
-                   ? cJSON_ParseWithLength((const char *)c->body, c->body_len)
+                   ? nx_json_parse(c->body, c->body_len)
                    : NULL;
     const cJSON *sh = b ? cJSON_GetObjectItemCaseSensitive(b, "shared") : NULL;
     if (!sh || !cJSON_IsBool(sh)) {

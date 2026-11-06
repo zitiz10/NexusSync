@@ -135,3 +135,30 @@ export interface ChunksReply {
 export interface CommitReply extends FileItem {
   stats: { chunks: number; newChunks: number; bytesSent: number; reusedPercent: number };
 }
+
+/** One block in GET /api/compare (SPEC §12, D-043). */
+export interface CompareBlock {
+  index: number;
+  size: number;
+  sha256: string;
+  /** The other version has a block with this hash. */
+  reused: boolean;
+  matchIndex: number | null;
+  stored: { containerId: number; offset: number; sharedBy: number } | null;
+}
+
+export interface CompareResult {
+  mode: 'fixed' | 'cdc';
+  files: {
+    a: { id: number; name: string; version: number; size: number };
+    b: { id: number; name: string; version: number; size: number };
+  };
+  totals: {
+    a: { chunks: number; bytes: number };
+    b: { chunks: number; bytes: number; reused: number; sentBytes: number };
+  };
+  firstDifference: number | null;
+  window: { from: number; count: number; a: CompareBlock[]; b: CompareBlock[] };
+  /** Version 2's blocks as [value, run] pairs; 1 = also in version 1. */
+  minimap: [number, number][];
+}

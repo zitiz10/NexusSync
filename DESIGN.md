@@ -321,9 +321,17 @@ Explanation paragraph for the selected mode.           stored in, shared by
 - **Window:** 32 blocks, starting 3 blocks before the first difference. The minimap is an 8 px bar of the whole file, each block a sliver colored blue or peach, with the current window outlined; clicking moves the window.
 - Block widths are proportional to block size, minimum 10 px.
 - **Hover** a version 2 block: if reused, its partner in version 1 turns `--shared` and the others dim to `--v1-dim`; the version 1 label reads "Match for block 131". If new, all version 1 blocks dim and the label reads "No matching block". Clicking selects a block for the details panel.
-- **Details panel** for stored blocks: status, SHA-256 (Geist Mono, first 16 and last 8 hex characters with a copy button for the full value), size in bytes, "Container 412, offset 1,236,992", "Shared by 6 files". In fixed mode, blocks are computed for comparison only, so the panel says "Not stored. NexusSync stores content-defined blocks; this fixed-size view is calculated for comparison."
+- **Details panel** for stored blocks: status, SHA-256 (Geist Mono, first 16 and last 8 hex characters with a copy button for the full value), size in bytes, "Container 412, offset 1,236,992", "Used 6 times across stored files" (see the M10 note below). In fixed mode, blocks are computed for comparison only, so the panel says "Not stored. NexusSync stores content-defined blocks; this fixed-size view is calculated for comparison."
 - **Explanation copy.** Fixed: "Every block is exactly 4 KB. The edit pushes all later data along, so every boundary after it lands somewhere new and later blocks stop matching." Content-defined: "Boundaries are chosen by a rolling hash over the content itself, not by position. After the edit the cuts fall in the same places again, so only the blocks around the edit change."
 - Empty state: "Upload a file and then an edited copy to compare them here."
+- **Copy as built (M10, D-043, D-045).**
+  - Summary: "210 of 211 blocks were already stored in version 1." (content-defined) or "122 of 245 blocks match version 1." (fixed), then "New in version 2: 4.7 KB of 977 KB." Compare measures version 2 against version 1. The real upload cost, which other files can lower, is in the Files drawer.
+  - Fixed-mode blocks are calculated, not stored, so their legend and labels read "Matches version 1" / "Different from version 1". "Already stored" / "New, sent" appear in content-defined mode only. A grey "Version 1 block" swatch completes the legend.
+  - Hover label: "Matches version 1 block 104" (the version 1 number), and the hovered block gets an ink ring. At rest the line reads "Hover a version 2 block to find its match".
+  - Details: "Used 6 times across stored files", since the index keeps a reference count and one file can use a block twice.
+  - The fixed explanation is conditional: "When an edit inserts or removes bytes, all later data shifts along…".
+  - Keyboard: one Tab stop per strip, arrows move, Escape clears the selection. The minimap is a slider (arrows, Page Up/Down, Home/End) with a 24 px hit area.
+  - Phones show 20 blocks per window, so both strips fit without scrolling apart.
 
 ### 8.6 Engine (admin)
 

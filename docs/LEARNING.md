@@ -544,3 +544,37 @@ The physical store, laid out in storage order (container files end to end), is c
 - Why are file-list deletes delayed by 6 s? *(Undo must not need a server-side restore; nothing is sent until the undo window closes.)*
 - What happens if two people upload the same new file at the same moment? *(Both store their blocks; the second index insert finds the entry and is a no-op; the extra container bytes become orphan bytes that compaction (M12) reclaims.)*
 - Why is `stats.updated` sent at most twice a second? *(Many uploads at once would otherwise flood every open browser; the payload is small and clients refetch details.)*
+
+## M10 — Compare versions
+
+### What it does
+`GET /api/compare?a=&b=&mode=` (`server/src/api/compare.c`) cuts two files into blocks with the chosen method and reports, for version 2, which blocks version 1 already has. It returns the totals, the first difference, a window of 32 blocks with their fingerprints and storage locations, and a run-length "minimap" of the whole file. The Compare screen (`web/src/screens/Compare.tsx`) draws the two windows as strips: blue means already stored, peach means new. Hovering a version 2 block lights up its twin in version 1. Switching between "Fixed 4 KB blocks" and "Content-defined" replays the story.
+
+### Why it is designed this way
+- **It is the project's core idea in one picture.** Insert one line into a file. With fixed 4 KB blocks, every boundary after the insertion moves, so nothing after it matches (the test file: only 122 of 245 blocks match, 489 KB new). With content-defined blocks the cut points depend on the content, so they fall in the same places again: 210 of 211 blocks are already stored, and 4.7 KB is new.
+- **Two ways to get the blocks.** If the file was stored with the method asked for, the blocks come straight from its recipe and know their container and offset. Otherwise the server reads the file through the engine (every block verified) and cuts it again in a streaming chunker, so a 1 GB file never needs 1 GB of memory (D-043).
+- **A cache with reference counts.** Fixed mode reads both files in full, so results are cached for 5 minutes (4 entries). A result can be dropped from the cache while another request still uses it. A reference count, changed under one mutex, makes sure it is freed only by the last user. A test with six threads and six comparisons (more than the four slots) checks this under ThreadSanitizer.
+
+### OS and DBMS concepts
+- **Content-defined chunking** (Rabin/Gear rolling hash) against fixed-size blocks: the boundary-shift problem.
+- **Hash joins:** matching blocks is a hash join of two lists on the SHA-256 key (`nx_hmap32`), linear time instead of comparing every pair.
+- **Run-length encoding** for the minimap: a 1,500-block file becomes a handful of runs.
+- **Reference counting and safe reclamation** in a shared cache.
+- **A real data race found by tooling:** cJSON writes a global error variable on every parse. ThreadSanitizer caught two worker threads doing so at once, and server-side parsing now goes through one small locked wrapper (D-044).
+
+### Testing
+- C: `test_compare` (content-defined: at most 3 new blocks; fixed: exactly the 36 whole blocks before the edit match, and the first block's hash equals the SHA-256 of the first 4 KB; window defaults and clamping; minimap runs add up; access rules; nine malformed queries), plus the six-thread cache test, under ASan and ThreadSanitizer.
+- Playwright (`web/e2e/m10.spec.ts`): defaults, both modes with their numbers, hover partners, the details panel (including the "calculated, not stored" note and a fingerprint checked against Node's SHA-256), minimap click and keyboard, opening from the Files drawer, the error state, dark mode, and reduced motion.
+
+### Likely examiner questions
+
+**Q1. "Why does one inserted line ruin fixed-size deduplication?"**
+Fixed blocks start every 4,096 bytes from the start of the file. Inserting 21 bytes moves every later byte 21 places along, so every later block holds different bytes and gets a different hash, even though the content is the same. Content-defined chunking cuts where a rolling hash of the last few bytes hits a pattern. After the insertion that same content produces the same hash values, so the cuts come back to the same content positions, and only the block containing the edit changes.
+
+**Q2. "How does the server find which blocks of version 2 exist in version 1 without comparing every pair?"**
+It puts version 1's block hashes in a hash table (hash → first index), then looks up each version 2 hash once: O(n + m) instead of O(n × m). This is a hash join.
+
+### More questions to practise
+- Why does the details panel say "used 6 times" and not "shared by 6 files"? *(The index stores a reference count; one file can reference a block twice; counting distinct files would mean reading every recipe.)*
+- Why are comparisons over 1 GB refused? *(Fixed mode reads both files in full; one request must not keep a worker busy for minutes.)*
+- Why did fixed mode report 122 matching blocks and not 0? *(Blocks before the insertion are unchanged; only those after it shift.)*
