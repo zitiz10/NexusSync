@@ -5,9 +5,9 @@ Resume after an interruption: read `CLAUDE.md`, then this file, re-run the tests
 
 Platforms: macOS (verified locally on Apple Silicon), Linux and Windows (verified in CI once the repo is pushed; see "Open problems").
 
-Sessions so far: session 1 built M1–M3; session 2 built M4–M8; session 3 built M9–M11; session 4 built M12–M13. **The next session starts at M14.**
+Sessions so far: session 1 built M1–M3; session 2 built M4–M8; session 3 built M9–M11; session 4 built M12–M14. **All milestones are done; see the final report at the end.**
 
-**Status (2026-11-06, session 4): M1–M13 done and committed. Next: M14 (polish pass and final report).** M11 was re-verified at the start of session 4 (`check.py` passes; Playwright 41/41). Read "Handoff notes" below before starting.
+**Status (2026-11-06, session 4): M1–M14 done and committed. The run is finished; open items are listed under "Open problems" and in the final report.** M11 was re-verified at the start of session 4 (`check.py` passes; Playwright 41/41). Read "Handoff notes" below before starting.
 
 ## M1 Scaffold
 - [x] Repo layout per `CLAUDE.md` (plus `server/src/platform/`); module folders fill in from M2
@@ -118,7 +118,10 @@ Sessions so far: session 1 built M1–M3; session 2 built M4–M8; session 3 bui
 - [x] `crash_test.py 50` passes against the M12+ server (with cleanup during kills; see M12); `check.py` passes
 
 ## M14 Polish and final report
-- [ ] Polish pass across the app (Impeccable `polish`, with the plugin's detector installed); every screen and state at three sizes per DESIGN §13; Playwright end-to-end flow of SPEC §15; final report below
+- [x] Playwright end-to-end flow of SPEC §15 against a real server (`e2e/m14.spec.ts`): join, upload, identical copy "Nothing sent", download with matching SHA-256, edited version, compare (fixed then content-defined), delete with Undo (server untouched), then the real delete (404), and the file sharing every block still downloads byte-exact
+- [x] Every screen and state at 1440, 1366, 390 (54 images in `web/screenshots/m14/`): sign in, join, Overview, Files, drawer, Compare (both modes, phone tap), Engine, Users; empty, loading, list error, offline (real kill), session ended (cookie dropped); dark mode for each screen; reduced motion checked by computed `animation-name`
+- [x] Polish pass: Impeccable `polish` method run by an independent reviewer (the plugin's detector script is not installed): 32/40, no P0 or P1. All P2s fixed except two recorded in D-051, plus the cheap P3s; re-shot once
+- [x] Final verification on the final tree: `make test` (ASan+UBSan) and `make tsan` clean, `check.py` passes, web unit 54/54, Playwright 50/50, `crash_test.py 50` passes (seed 14: 6,616 operations, 132 cleanups, 36 cut short by a kill)
 
 ## Handoff notes for M14 (session 4)
 
@@ -205,4 +208,40 @@ From M8:
 - **macOS SDK mismatch on the dev Mac.** A leftover beta `MacOSX27.0.sdk` breaks linking. The Makefile works around it (D-009). Deleting that SDK (needs sudo) would remove the need.
 
 ## Final report
-(Written at the end of the run.)
+
+**What works.** Everything in SPEC §14, M1–M14:
+- **Engine.** The storage engine in portable C has content-defined and fixed chunking, in-repo SHA-256, append-only containers, an extendible-hashing index on a Clock, no-steal buffer pool, slotted-page catalog, recipes, a redo-only WAL with doublewrite checkpoints and crash recovery, cleanup with compaction, an integrity scan, `--fsck`, and `--rebuild-index`.
+- **Server.** HTTP/1.1 and WebSocket with sign-in, join codes, rate limits, and sessions that survive crashes; resumable uploads that send only missing blocks; verified downloads; stats, the block map, compare, and the admin API; maintenance jobs with a nightly schedule.
+- **Web app.** The React app follows DESIGN.md: Overview with a live block field, Files with drawer and undo, the upload tray, Compare, Engine, Users, and every system state.
+- **Tools.** The `nexus` CLI; demo data and reset scripts; the evaluation with tables and charts.
+
+**What was verified, and how.**
+
+| Check | Result |
+|---|---|
+| C tests (16 executables, 105 cases) | ASan+UBSan clean; ThreadSanitizer clean |
+| Crash tests | In-process failpoints at every commit, checkpoint, and compaction step; `crash_test.py 50` against the real server with SIGKILLs, uploads, deletes, and cleanup: 50/50, run on 3 seeds |
+| `concurrency_test.py` | 8 CLI clients, overlapping files, every download SHA-256 checked, fsck clean, `nexus stats` matches |
+| Web unit tests | 54/54 (chunker parity with C, upload state machine, copy) |
+| Playwright | 50/50 against a real `nexusd`, including real kills and recovery |
+| Screenshots | Every screen and state checked against DESIGN at three sizes; independent design reviews per milestone and a final polish review (32/40, no P0/P1) |
+| Evaluation smoke test | On 732 MB of generated demo data, the server's stored bytes equal the CDC baseline exactly |
+
+**Known issues and limits** (details in "Open problems" and DECISIONS):
+- **Platforms.** Linux and Windows are not compiled or run yet; that needs the GitHub repo and CI, or a teammate's laptop. Everything above was verified on macOS only.
+- **All-zero index page.** An index bucket page zeroed by disk damage opens as an empty page. `--fsck` reports the missing blocks and `--rebuild-index` repairs the index (D-049).
+- **Jobs.** Cleanup and the scan cannot be cancelled, and shutdown waits for a running job.
+- **Design questions for the team:** D-039, D-042 item 1, D-045 item 1, D-047, D-051.
+- **Security.** HTTP without TLS on the LAN, so the session cookie is not marked Secure (SPEC §13). Encryption at rest and proof-of-ownership are not built (stretch goals).
+- **Evaluation data.** The evaluation numbers so far come from synthetic demo data and localhost; the report needs the team's real lab datasets and a LAN run.
+
+**Commands to start the demo** (DEMO.md §3; on Windows use the MSYS2 UCRT64 shell):
+```bash
+make -C server && (cd web && npm ci && npm run build)
+cp nexussync.conf.example nexussync.conf
+python3 scripts/make_demo_data.py demo-data/        # once; copy demo-data/ to the client laptops
+python3 scripts/demo_reset.py                       # fresh server: admin, riya, arjun (passwords in demo.env)
+./server/build/nexusd --config nexussync.conf --fsck     # during the demo, after the kill -9 step
+python3 eval/run_eval.py eval/datasets              # the real evaluation, on the team's datasets
+```
+Before the demo: `make -C server test` and `python3 scripts/crash_test.py 20` (DEMO.md §6).

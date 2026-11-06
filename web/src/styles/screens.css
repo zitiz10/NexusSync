@@ -41,9 +41,8 @@ a.btn {
 }
 
 .inline-error {
-  padding: var(--s-4) 0;
+  padding: var(--s-5) 0; /* the same room as the .quiet empty line it may replace (M14) */
   color: var(--danger);
-  font-size: var(--fs-small);
 }
 
 .inline-error .text-btn {
@@ -279,6 +278,9 @@ a.row__name:hover {
   }
   .hero .display {
     font-size: min(var(--fs-display), 10cqi);
+  }
+  .hero .skeleton--display {
+    height: calc(min(var(--fs-display), 10cqi) * 2); /* same box as the headline: no shift (M14) */
   }
 }
 
@@ -1462,6 +1464,21 @@ a.row__name:hover {
 }
 
 @media (max-width: 767px) {
+  /* Event log on phones: an entry's lines stay together, entries apart (M14). */
+  .log__list {
+    gap: var(--s-3);
+  }
+  .log__line {
+    row-gap: var(--s-1);
+  }
+  /* The Overview legend in two columns, so no swatch sits alone on a row. */
+  .legend {
+    display: grid;
+    grid-template-columns: repeat(2, max-content);
+  }
+  .hero .actions > * {
+    flex: 1 1 100%;
+  }
   .bf {
     gap: calc(var(--tile-gap) / 2);
   }

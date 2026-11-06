@@ -685,3 +685,18 @@ gzip compresses the whole tar as one stream. An edit near the start changes the 
 ### More questions to practise
 - How do you know the evaluation's CDC numbers are what the server really stores? *(run_eval checks the server's physical bytes against the baseline and fails on any difference.)*
 - Why are the demo files synthetic? *(The real lab data is collected by the team with permission and never committed; synthetic files only test the tooling and the demo.)*
+
+## M14 — Polish and the end-to-end flow
+
+### What it does
+- `web/e2e/m14.spec.ts` runs the whole SPEC §15 flow against a real server, with no mocks. A new student joins with the lab code, uploads a file, then uploads an identical copy and sees "Nothing sent". She downloads the file and its SHA-256 matches the drawer. She uploads an edited version, compares the two versions, and deletes the copy: first with Undo (nothing reaches the server), then for real (the server answers 404, and the file that shared every block still downloads correctly).
+- The same spec takes the final screenshot of every screen and state at 1440, 1366, and 390 px, plus dark mode, and checks reduced motion.
+- An independent design review of those screenshots found nothing serious (32/40). The fixes are listed in D-051.
+
+### Likely examiner questions
+
+**Q1. "How do you know the interface shows real data and not a mock?"**
+Every Playwright test runs against a real `nexusd` with a fresh data directory, started by the test setup. The production build fails if mock code is included (CLAUDE.md). The flow test checks numbers against the server: the downloaded bytes' SHA-256, and a 404 after the delete.
+
+**Q2. "You delete a file that shares all its blocks with another file. What happens to the blocks?"**
+Each block's reference count drops by one, but stays above zero because the other file still uses it. Cleanup frees only blocks with refcount 0, so the other file still downloads, byte for byte. The M14 flow checks exactly this.

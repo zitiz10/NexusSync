@@ -570,3 +570,22 @@ A crash at any point leaves a correct store. Before step 3 commits: the old loca
 - **`demo.env`** holds `ADMIN_PASSWORD`, `RIYA_PASSWORD`, `ARJUN_PASSWORD`. If they are missing, they are generated (14 characters from an alphabet without look-alikes) and the file is written with mode 0600. Passwords are never printed, because the server terminal may be on the projector. `demo_reset.py` deletes only a directory holding a NexusSync superblock, and asks first unless `--yes` is given.
 - **Units.** The evaluation tables use 1024-based units, like the web app (`formatBytes`) and the demo data's sizes.
 - **Throughput is measured on localhost and labelled so.** LAN numbers depend on the router, so they come from the team's own run on the demo network.
+
+## D-051 M14 polish review: what was fixed, what is left (M14)
+
+An independent Impeccable polish review of all 54 final screenshots scored the app 32/40, with no P0 or P1 findings.
+
+**Fixed:**
+- **Blue links.** Links and text buttons were drawn in `--shared` blue, which DESIGN §1 rule 1 reserves for "already stored". They now use `--ink` with the 1 px underline.
+- **Compare on touch screens.** Phones now get "Tap a version 2 block…" instead of the hover prompt. Below 1200 px, a tapped block brings its details panel into view; keyboard moves never scroll the page.
+- **Event log.** On phones, an entry's lines stay together and entries are spaced apart. Long details show in full on hover (`title`), and `ownerId` and `chunker` were dropped from the line.
+- **Overview loading skeleton.** It now has the same height as the real headline (no layout shift) and two lead lines.
+- **List errors** have the same size and spacing as the empty line they replace.
+- **Small fixes:**
+  - Usernames are set in Geist (DESIGN §3 keeps mono for fingerprints and the log).
+  - "SHA‑256" no longer breaks at its hyphen.
+  - The phone legend is in two columns, and the phone hero buttons are full width.
+
+**Left on purpose:**
+1. **The banner sits about 7 px closer to the headline when offline.** It is a temporary state, and the banner itself is the signal.
+2. **The "Nothing stored yet" empty Overview on a fresh store** is captured by M9 (`web/screenshots/m9/`, which runs on an empty store), not again in M14. M14 shows the student variant: a student with no files on a server that has data.

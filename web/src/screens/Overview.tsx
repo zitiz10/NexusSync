@@ -182,6 +182,7 @@ export function Overview() {
             <>
               <span className="skeleton skeleton--display" />
               <span className="skeleton skeleton--line" />
+              <span className="skeleton skeleton--line" />
             </>
           ) : empty ? (
             <>

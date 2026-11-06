@@ -116,11 +116,11 @@
   border: 0;
   border-radius: var(--r-ctl);
   background: none;
-  color: var(--shared);
+  color: var(--ink); /* not blue: DESIGN §1 rule 1 (M14) */
   font-size: var(--fs-small);
   cursor: pointer;
   text-decoration: underline;
-  text-decoration-color: color-mix(in srgb, var(--shared) 40%, transparent);
+  text-decoration-color: color-mix(in srgb, var(--ink) 40%, transparent);
   text-underline-offset: 0.2em;
 }
 

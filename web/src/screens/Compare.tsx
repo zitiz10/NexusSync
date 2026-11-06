@@ -384,14 +384,24 @@ interface StripsProps {
   setSelected: (s: { side: 'a' | 'b'; block: CompareBlock }) => void;
 }
 
+/** A tap or click on a block below 1200 px: the details panel sits below
+ * the summary there, so bring it into view (keyboard moves stay put). M14. */
+function revealDetails() {
+  if (window.innerWidth >= 1200) return;
+  requestAnimationFrame(() => document.querySelector('.cmp-details')?.scrollIntoView({ block: 'nearest' }));
+}
+
 function Strips({ mode, data, entering, hover, setHover, selected, setSelected, clear }: StripsProps & { clear: () => void }) {
   const { a: wa, b: wb } = data.window;
   const reusedInWindow = wb.filter((x) => x.reused).length;
   let reusedK = 0;
   let newK = 0;
   const partnerShown = hover?.matchIndex != null && wa.some((x) => x.index === hover.matchIndex);
+  const touch = typeof window !== 'undefined' && window.matchMedia?.('(hover: none)').matches;
   const v1Label = !hover
-    ? 'Hover a version 2 block to find its match'
+    ? touch
+      ? 'Tap a version 2 block to find its match'
+      : 'Hover a version 2 block to find its match'
     : hover.reused
       ? `Matches version 1 block ${(hover.matchIndex! + 1).toLocaleString('en-US')}${partnerShown ? '' : ', outside this window'}`
       : 'No matching block';
@@ -441,7 +451,10 @@ function Strips({ mode, data, entering, hover, setHover, selected, setSelected, 
                   tabIndex={tabIndexFor('a', blk, k)}
                   aria-label={`Version 1, block ${blk.index + 1}, ${formatBytes(blk.size)}${blk.reused ? ', kept in version 2' : ', not in version 2'}`}
                   aria-current={selected?.side === 'a' && selected.block.index === blk.index ? 'true' : undefined}
-                  onClick={() => setSelected({ side: 'a', block: blk })}
+                  onClick={() => {
+                    setSelected({ side: 'a', block: blk });
+                    revealDetails();
+                  }}
                   data-testid="cmp-a-block"
                   data-index={blk.index}
                 />
@@ -493,7 +506,10 @@ function Strips({ mode, data, entering, hover, setHover, selected, setSelected, 
                   onMouseEnter={() => setHover(blk)}
                   onFocus={() => setHover(blk)}
                   onBlur={() => setHover(null)}
-                  onClick={() => setSelected({ side: 'b', block: blk })}
+                  onClick={() => {
+                    setSelected({ side: 'b', block: blk });
+                    revealDetails();
+                  }}
                   data-testid="cmp-b-block"
                   data-index={blk.index}
                 />
@@ -502,7 +518,11 @@ function Strips({ mode, data, entering, hover, setHover, selected, setSelected, 
           </div>
         </div>
         <p className="strip-row__note meta">
-          {selected ? `Block ${(selected.block.index + 1).toLocaleString('en-US')} of version ${selected.side === 'a' ? 1 : 2} selected` : 'Select a block'}
+          {selected
+            ? `Block ${(selected.block.index + 1).toLocaleString('en-US')} of version ${selected.side === 'a' ? 1 : 2} selected`
+            : touch
+              ? ''
+              : 'Select a block'}
         </p>
       </div>
     </div>

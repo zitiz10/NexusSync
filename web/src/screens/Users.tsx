@@ -120,7 +120,7 @@ export function Users() {
                     {u.displayName}
                     {self ? <span className="meta"> (you)</span> : null}
                   </span>
-                  <span className="meta mono">{u.username}</span>
+                  <span className="meta">{u.username}</span>
                   {/* Below 1200 px the columns fold into this line (DESIGN §8.7 keeps every field). */}
                   <span className="meta row__summary">
                     {u.role === 'admin' ? 'Admin' : 'Student'} · {u.files === 1 ? '1 file' : `${u.files.toLocaleString('en-US')} files`},{' '}

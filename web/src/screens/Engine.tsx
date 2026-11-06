@@ -168,12 +168,13 @@ function details(e: ServerEvent): string {
   const parts: string[] = [];
   for (const [k, v] of Object.entries(d as Record<string, unknown>)) {
     if (v === null || typeof v === 'object') continue;
-    if (k === 'sha256' || k === 'uploadId') continue;
+    if (k === 'sha256' || k === 'uploadId' || k === 'ownerId' || k === 'chunker') continue;
     parts.push(`${k}=${String(v)}`);
   }
-  const s = parts.join(' ');
-  return s.length > 140 ? `${s.slice(0, 139)}…` : s;
+  return parts.join(' ');
 }
+
+const short = (s: string) => (s.length > 140 ? `${s.slice(0, 139)}…` : s);
 
 interface LoggedEvent {
   id: number; /* stable key: a dropped oldest event must not re-render (and re-announce) the rest */
@@ -212,7 +213,9 @@ function EventLog({ events }: { events: LoggedEvent[] }) {
                 {new Date(e.at).toLocaleTimeString('en-GB', { hour12: false })}
               </time>
               <span className="log__type">{e.type}</span>
-              <span className="log__data">{details(e)}</span>
+              <span className="log__data" title={details(e).length > 140 ? details(e) : undefined}>
+                {short(details(e))}
+              </span>
             </li>
           ))}
         </ol>
@@ -561,7 +564,7 @@ export function Engine() {
               ]}
             />
           )}
-          <p className="meta">Downloads already re-check every block against its SHA-256; a scan checks every stored block.</p>
+          <p className="meta">Downloads already re-check every block against its SHA‑256; a scan checks every stored block.</p>
           <div className="actions">
             <Button
               variant="secondary"

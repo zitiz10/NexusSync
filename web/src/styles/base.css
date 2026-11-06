@@ -97,10 +97,11 @@ a {
 }
 
 /* A text link inside running copy. */
+/* Ink, not blue: blue only ever means "already stored" (DESIGN §1 rule 1, M14). */
 .link {
-  color: var(--shared);
+  color: var(--ink);
   text-decoration: underline;
-  text-decoration-color: color-mix(in srgb, var(--shared) 40%, transparent);
+  text-decoration-color: color-mix(in srgb, var(--ink) 40%, transparent);
   transition: text-decoration-color var(--t-micro) var(--ease-out);
 }
 
