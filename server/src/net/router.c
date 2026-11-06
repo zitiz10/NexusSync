@@ -1,6 +1,7 @@
 /* router.c — request dispatch and gates. See router.h. */
 #include "net/router.h"
 
+#include "api/admin.h"
 #include "api/auth.h"
 #include "api/compare.h"
 #include "api/files.h"
@@ -65,6 +66,7 @@ static void h_health(nx_ctx *c)
         nx_json_obj_open(&j);
         nx_json_key_str(&j, "phase", "replaying-log");
         nx_json_key_u64(&j, "elapsedMs", plat_now_mono_ms() - c->app->started_ms);
+        nx_json_key_u64(&j, "recordsReplayed", atomic_load(&c->app->replayed));
         nx_json_obj_close(&j);
     }
     nx_json_obj_close(&j);
@@ -240,6 +242,13 @@ static const route ROUTES[] = {
     {"GET", "/api/admin/join-code", nx_h_admin_join_code, R_ADMIN},
     {"POST", "/api/admin/join-code/rotate", nx_h_admin_join_code_rotate, R_ADMIN},
     {"POST", "/api/admin/checkpoint", h_admin_checkpoint, R_ADMIN},
+    {"GET", "/api/admin/users", nx_h_admin_users, R_ADMIN},
+    {"POST", "/api/admin/users/{id}", nx_h_admin_user_update, R_ADMIN},
+    {"GET", "/api/admin/events", nx_h_admin_events, R_ADMIN},
+    {"GET", "/api/admin/recoveries", nx_h_admin_recoveries, R_ADMIN},
+    {"GET", "/api/admin/addresses", nx_h_admin_addresses, R_ADMIN},
+    {"POST", "/api/admin/gc", nx_h_admin_gc, R_ADMIN},
+    {"POST", "/api/admin/scan", nx_h_admin_scan, R_ADMIN},
     {"GET", "/api/stats", nx_h_stats, R_AUTH},
     {"GET", "/api/blockmap", nx_h_blockmap, R_AUTH},
     {"GET", "/api/compare", nx_h_compare, R_AUTH},

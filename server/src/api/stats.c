@@ -4,6 +4,8 @@
 #include "api/files.h"
 #include "engine/container.h"
 #include "util/hmap.h"
+#include "engine/chunk.h"
+#include "nexus_version.h"
 #include "util/log.h"
 
 #include <inttypes.h>
@@ -326,6 +328,10 @@ static int engine_members(nx_app *app, nx_json *j, const nx_engine_stats *st)
     else
         nx_json_null(j);
     nx_json_key_u64(j, "dirtyPages", st->pool.dirty);
+    /* Raw counters, so the Engine screen can chart the hit rate per
+     * interval (the cumulative rate barely moves after a while). */
+    nx_json_key_u64(j, "bufferHits", st->pool.hits);
+    nx_json_key_u64(j, "bufferMisses", st->pool.misses);
     nx_json_obj_close(j);
 
     nx_json_key(j, "containers");
@@ -348,6 +354,21 @@ static int engine_members(nx_app *app, nx_json *j, const nx_engine_stats *st)
     key_iso_or_null(j, "lastScanAt", 0);
     nx_json_key_u64(j, "verified", 0);
     nx_json_key_u64(j, "failures", 0);
+    nx_json_obj_close(j);
+
+    /* Server facts for the Engine screen (DESIGN §8.6 "Server"). */
+    nx_json_key(j, "server");
+    nx_json_obj_open(j);
+    nx_json_key_str(j, "version", NX_VERSION);
+    nx_json_key_str(j, "dataDir", app->cfg.data_dir);
+    nx_json_key_str(j, "chunker", app->cfg.chunker == NX_CHUNKER_CDC ? "cdc" : "fixed");
+    nx_json_key_u64(j, "cdcMin", NX_CDC_MIN);
+    nx_json_key_u64(j, "cdcAvg", NX_CDC_AVG);
+    nx_json_key_u64(j, "cdcMax", NX_CDC_MAX);
+    nx_json_key_u64(j, "fixedSize", NX_FIXED_SIZE);
+    nx_json_key_u64(j, "containerSize", app->cfg.container_size);
+    nx_json_key_u64(j, "checkpointIntervalS", app->cfg.checkpoint_interval_s);
+    nx_json_key_u64(j, "gcGraceS", app->cfg.gc_grace_s);
     nx_json_obj_close(j);
 
     nx_json_key(j, "cleanup");

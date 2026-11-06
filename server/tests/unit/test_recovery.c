@@ -14,6 +14,8 @@
  *     against a model of what was committed (I4)
  */
 #include "nx_engine_util.h"
+
+#include <stdatomic.h>
 #include "util/failpoint.h"
 
 static void small_cfg(const char *dir, size_t pool, nx_engine_config *cfg)
@@ -87,10 +89,18 @@ static void test_replay_without_checkpoint(void)
     REQUIRE(nx_engine_add_user(e, &u) == 0);
     nx_engine_abandon(e); /* killed: nothing checkpointed since open */
 
-    e = reopen(dir, 256);
-    REQUIRE(e);
+    /* Reopen with a progress counter (D-046): it ends equal to the records
+     * replayed, which /api/health shows while recovering. */
+    nx_fail_reset();
+    nx_engine_config pcfg;
+    small_cfg(dir, 256, &pcfg);
+    _Atomic uint64_t progress = 0;
+    pcfg.replay_progress = &progress;
+    e = NULL;
+    REQUIRE(nx_engine_open(&pcfg, &e) == 0);
     nx_engine_recovery ri;
     nx_engine_last_recovery(e, &ri);
+    CHECK(ri.records_replayed > 0 && atomic_load(&progress) == ri.records_replayed);
     fprintf(stderr, "    replayed %" PRIu64 " records in %" PRIu64 " transactions (%" PRIu64 " ms)\n",
             ri.records_replayed, ri.txns_redone, ri.ms);
     CHECK(ri.txns_redone >= 22); /* 10 x (blocks + commit) + delete + user */

@@ -25,7 +25,13 @@ export function Recovering({ health }: { health: Health }) {
     <Calm title="The server is recovering after an unexpected stop">
       <p className="lead">It is replaying its write-ahead log so every committed change is back in place.</p>
       {/* Visible progress only: a live region here would speak every second. */}
-      <p className="meta">Replaying the log, {secs} s so far.</p>
+      <p className="meta">
+        Replaying the log
+        {health.progress?.recordsReplayed
+          ? `, ${health.progress.recordsReplayed.toLocaleString('en-US')} ${health.progress.recordsReplayed === 1 ? 'record' : 'records'} replayed`
+          : ''}
+        , {secs} s so far.
+      </p>
     </Calm>
   );
 }

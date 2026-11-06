@@ -324,8 +324,15 @@
   transition: opacity var(--t-state) var(--ease-out);
 }
 
-.main--dimmed {
+/* Offline (DESIGN §8.8, D-039 item 1 resolved in M11): the data visuals dim
+ * to 60% to show they may be stale, but text keeps full contrast; 60% text
+ * would fall to about 2.7:1, below the 4.5:1 floor. The banner says why. */
+.main--dimmed :is(.bf, .dedup, .strips, .minimap, .hist, .spark, .qr) {
   opacity: var(--offline-dim);
+}
+
+.main--dimmed :is(.bf, .dedup, .strips, .minimap, .hist, .spark, .qr) * {
+  transition: none; /* the dim is one change, not a cascade of tile fades */
 }
 
 .page-head {

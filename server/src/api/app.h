@@ -40,6 +40,7 @@ typedef struct nx_app {
     nx_compare *compare; /* /api/compare result cache */
     uint32_t pbkdf2_iters; /* SPEC §13: 600,000. Tests lower it in code. */
     uint64_t started_ms;
+    _Atomic uint64_t replayed; /* log records redone so far while recovering */
 
     pthread_mutex_t join_mu;
     char join_code[NX_JOIN_CODE_LEN + 1];

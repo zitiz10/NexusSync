@@ -14,7 +14,7 @@ export type HealthStatus = 'ok' | 'recovering' | 'stopping' | 'failed';
 export interface Health {
   status: HealthStatus;
   version: string;
-  progress?: { phase: string; elapsedMs: number };
+  progress?: { phase: string; elapsedMs: number; recordsReplayed?: number };
 }
 
 export interface FileItem {
@@ -77,10 +77,24 @@ export interface Stats {
     avgFillPercent: number;
     bufferHitRate: number | null;
     dirtyPages: number;
+    bufferHits: number;
+    bufferMisses: number;
   };
   containers?: { count: number; bytes: number; reclaimableBytes: number; liveHistogram: number[] };
   integrity?: { lastScanAt: string | null; verified: number; failures: number };
   cleanup?: { pendingBytes: number; nextRunAt: string | null };
+  server?: {
+    version: string;
+    dataDir: string;
+    chunker: 'cdc' | 'fixed';
+    cdcMin: number;
+    cdcAvg: number;
+    cdcMax: number;
+    fixedSize: number;
+    containerSize: number;
+    checkpointIntervalS: number;
+    gcGraceS: number;
+  };
 }
 
 /** stats.updated: the global numbers only. */
@@ -161,4 +175,35 @@ export interface CompareResult {
   window: { from: number; count: number; a: CompareBlock[]; b: CompareBlock[] };
   /** Version 2's blocks as [value, run] pairs; 1 = also in version 1. */
   minimap: [number, number][];
+}
+
+// ---- admin (SPEC §12 "Admin", D-046) ----------------------------------------
+
+export interface AdminUser {
+  id: number;
+  username: string;
+  displayName: string;
+  role: Role;
+  status: 'active' | 'disabled';
+  files: number;
+  bytes: number;
+  createdAt: string;
+  lastSeenAt: string | null;
+}
+
+export interface Recovery {
+  at: string;
+  recordsReplayed: number;
+  transactionsRedone: number;
+  transactionsDiscarded: number;
+  pagesRepaired: number;
+  walBytesCut: number;
+  durationMs: number;
+  result: 'clean' | 'recovered';
+}
+
+export interface Addresses {
+  port: number;
+  listen: string;
+  items: { address: string; url: string }[];
 }

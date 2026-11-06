@@ -5,9 +5,9 @@ Resume after an interruption: read `CLAUDE.md`, then this file, re-run the tests
 
 Platforms: macOS (verified locally on Apple Silicon), Linux and Windows (verified in CI once the repo is pushed; see "Open problems").
 
-Sessions so far: session 1 built M1–M3; session 2 built M4–M8; session 3 built M9 and M10. **The next session starts at M11** and continues to M14.
+Sessions so far: session 1 built M1–M3; session 2 built M4–M8; session 3 built M9–M11. **The next session starts at M12** and continues to M14.
 
-**Status (2026-11-06, session 3): M1–M10 done and committed. Next: M11 (Engine and Users screens, system states).** M8 was re-verified at the start of session 3 (`check.py` passes; Playwright 18/18, one test re-run alone after the Mac slept mid-run). Read "Handoff notes for M9–M14" below before starting.
+**Status (2026-11-06, session 3): M1–M11 done and committed. Next: M12 (cleanup, compaction, integrity scan).** M8 was re-verified at the start of session 3 (`check.py` passes; Playwright 18/18, one test re-run alone after the Mac slept mid-run). Read "Handoff notes for M9–M14" below before starting.
 
 ## M1 Scaffold
 - [x] Repo layout per `CLAUDE.md` (plus `server/src/platform/`); module folders fill in from M2
@@ -96,9 +96,9 @@ Sessions so far: session 1 built M1–M3; session 2 built M4–M8; session 3 bui
 - [x] Screen per DESIGN §8.5 (defaults to fixed, pickers, window, minimap, hover partners, details, motion). Playwright `e2e/m10.spec.ts` 7/7 (defaults; both modes with real numbers; hover partner and dimming; details with location and "calculated, not stored" note; minimap click and keyboard; Escape; Files drawer link; error with Retry; dark; reduced motion). Screenshots at three sizes in `web/screenshots/m10/`. Independent review 26/40 with every P1 fixed (D-045). Full Playwright 34/34; `check.py` passes
 
 ## M11 Engine and Users screens, system states
-- [ ] Server: remaining `/api/admin/*` (users, events, recoveries, addresses, gc, scan; join code is done)
-- [ ] Engine screen (DESIGN §8.6) with live data and actions; Users screen (§8.7); QR codes (`qrcode` package)
-- [ ] Resolve D-039 items 1–2 (offline dimming contrast; live recovery counts)
+- [x] Server: remaining `/api/admin/*` (users, events, recoveries, addresses, gc, scan; join code is done). `test_admin`: per-user files and bytes; role change takes effect on the user's own session; disable closes their WebSocket, ends the session, refuses sign-in, and enable restores it; no self-change (409); five malformed bodies 400; the event log has engine and file events but not the chatty ones; the recovery history entry; addresses; admin stats `server`. `test_recovery_log`: newest first, torn tail skipped and overwritten, flipped bit rejected. ASan and ThreadSanitizer clean. **`gc` and `scan` answer 501 until M12 builds them (D-046)**
+- [x] Engine screen (DESIGN §8.6) with live data and actions; Users screen (§8.7); QR codes (`qrcode` 1.5.4, installed with the user's OK). Playwright `e2e/m11.spec.ts` 7/7: every Engine section, the live event log, the hit-rate sparkline, Checkpoint now, QR (address answered in the browser, D-037), a real SIGKILL shown as "Recovered", users roles with Undo, disable signs out another browser, enable, join-code rotate, the keyboard focus path, and a student refused. Screenshots at three sizes in `web/screenshots/m11/`. Independent review 27/40 with every P1 fixed (D-047)
+- [x] Resolve D-039 items 1–2: offline dims only data visuals and text keeps full contrast (checked by computed opacity in Playwright); `/api/health` reports `recordsReplayed` while recovering (engine progress counter, checked in `test_replay_without_checkpoint`) and the recovering page shows it
 
 ## M12 Cleanup, compaction, integrity
 - [ ] GC respecting the grace period and open upload sessions (`nx_uploads_declares` exists), compaction surviving a crash mid-way, scan detecting an injected corrupt byte, nightly schedule, `--rebuild-index`
@@ -111,12 +111,12 @@ Sessions so far: session 1 built M1–M3; session 2 built M4–M8; session 3 bui
 
 ## Handoff notes for M9–M14 (read before starting)
 
-**How to resume.** Read `CLAUDE.md`, then this file, then `DESIGN.md` §8.6–§8.8 and SPEC §12 "Admin" for M11. Re-run the last step's tests first:
+**How to resume.** Read `CLAUDE.md`, then this file, then SPEC §8 (cleanup) and §10, and DECISIONS D-017 (soft delete), D-040 (block map), D-046 (gc/scan are 501 stubs in `server/src/api/admin.c`) for M12. Re-run the last step's tests first:
 ```bash
 python3 scripts/check.py          # C tests (ASan), 8-client concurrency test, web unit tests
 cd web && npm run e2e             # builds the app, starts a real nexusd, 18 Playwright tests
 ```
-Both passed at the M10 commit (check.py; Playwright 34/34). Playwright runs spec files in name order: `foundation`, `m09`, `m10`. `m09` needs an empty store, so name new specs `m11…` and keep them independent of earlier data. No GitHub remote yet; do not push. Commit after each milestone (no Co-Authored-By trailers, CLAUDE.md).
+Both passed at the M11 commit (check.py; Playwright 41/41). Playwright runs spec files in name order: `foundation`, `m09`, `m10`. `m09` needs an empty store, so name new specs `m12…` and keep them independent of earlier data. For M12: make `/api/admin/gc` and `/api/admin/scan` real, fill `integrity.*` and `cleanup.nextRunAt` in `/api/stats`, and turn the Engine screen's unavailable buttons (`btn--unavailable` in `Engine.tsx`) into real actions with progress (`engine.gc` / `engine.scan` events). No GitHub remote yet; do not push. Commit after each milestone (no Co-Authored-By trailers, CLAUDE.md).
 
 **Packages and tools already approved and installed:** cJSON (vendored), Geist fonts, `lucide-react`, `@playwright/test` (uses the installed Google Chrome, `channel: 'chrome'`). Still allowed but not installed: `qrcode` (M11). Downloads need the user's OK each time.
 

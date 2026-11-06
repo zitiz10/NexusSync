@@ -20,6 +20,7 @@
 #define NX_WS_H
 
 #include "platform/platform.h"
+#include "util/json_out.h"
 
 #include <stdbool.h>
 #include <stddef.h>
@@ -86,5 +87,11 @@ void nx_hub_publish(nx_hub *h, const char *type, const char *data_json, nx_audie
 /* Drops every connection of a user (logout, disabled account). */
 void nx_hub_kick_user(nx_hub *h, uint32_t user_id);
 size_t nx_hub_client_count(nx_hub *h);
+
+/* The last NX_EVENT_LOG events published (except the chatty stats.updated
+ * and upload.progress), oldest first, for the admin event log (DESIGN
+ * §8.6). Appends a JSON array of {type, at, data} to out. */
+#define NX_EVENT_LOG 256u
+void nx_hub_recent(nx_hub *h, size_t limit, nx_json *out);
 
 #endif

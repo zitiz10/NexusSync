@@ -106,7 +106,9 @@ a.btn {
 
 .kv dd {
   margin: 0;
+  min-width: 0;
   font-size: var(--fs-small);
+  overflow-wrap: anywhere; /* long paths (data directory) wrap inside their column */
 }
 
 /* ---- dedup bar (DESIGN §6) --------------------------------------------------------- */
@@ -1103,6 +1105,281 @@ a.row__name:hover {
   line-height: 1.6;
 }
 
+/* ---- Engine and Users (DESIGN §8.6, §8.7) -------------------------------------------------------- */
+
+.engine {
+  display: grid;
+  gap: 0 var(--s-14);
+}
+
+@media (min-width: 1200px) {
+  .engine {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+.engine__section {
+  display: grid;
+  gap: var(--s-4);
+  align-content: start;
+  padding: var(--s-8) 0 var(--s-12);
+  border-top: 1px solid var(--line);
+  min-width: 0;
+}
+
+.engine__section--wide {
+  grid-column: 1 / -1;
+}
+
+.engine__h3 {
+  font-size: var(--fs-ui);
+  font-weight: 500;
+  margin-top: var(--s-2);
+}
+
+.addresses {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--s-6);
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.addresses__item {
+  display: grid;
+  gap: var(--s-2);
+  justify-items: start;
+  font-size: var(--fs-small);
+}
+
+.qr {
+  width: var(--qr-size);
+  height: var(--qr-size);
+  border-radius: var(--r-ctl);
+}
+
+.qr__bg {
+  fill: var(--qr-bg);
+}
+
+.qr__fg {
+  fill: var(--qr-fg);
+}
+
+.joincode {
+  display: grid;
+  gap: var(--s-2);
+}
+
+.joincode__row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: var(--s-2) var(--s-5);
+}
+
+.joincode__value {
+  font-size: var(--fs-h2);
+  letter-spacing: 0.08em;
+}
+
+.confirm--quiet {
+  background: var(--surface-hover);
+}
+
+.confirm--inline {
+  padding: var(--s-4);
+}
+
+.spark-row {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--s-2) var(--s-3);
+}
+
+.spark {
+  width: var(--spark-w);
+  height: var(--spark-h);
+  overflow: visible;
+}
+
+.spark path {
+  fill: none;
+  stroke: var(--shared);
+  stroke-width: 1.5;
+  vector-effect: non-scaling-stroke;
+}
+
+.spark--empty {
+  width: auto;
+  height: auto;
+}
+
+.hist {
+  margin: 0;
+  display: grid;
+  gap: var(--s-1);
+  max-width: var(--side-w);
+}
+
+.hist__bars {
+  display: grid;
+  grid-template-columns: repeat(10, minmax(0, 1fr));
+  gap: 2px; /* DESIGN §6: bar histograms with 2 px gaps */
+  align-items: end;
+  height: var(--hist-h);
+  border-bottom: 1px solid var(--line-strong);
+}
+
+.hist__bar {
+  height: 100%;
+  background: var(--shared);
+  border-radius: var(--r-tile) var(--r-tile) 0 0;
+  transform-origin: bottom;
+  transition: transform var(--t-state) var(--ease-out);
+}
+
+.hist__axis {
+  display: flex;
+  justify-content: space-between;
+}
+
+/* A state shown as ink text with a coloured dot: --ok and --danger text
+ * fall below 4.5:1 on some surfaces (3.59:1 and 4.35:1), dots need 3:1. */
+.state-dot {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--s-2);
+  color: var(--ink);
+}
+
+.state-dot::before {
+  content: "";
+  width: var(--dot);
+  height: var(--dot);
+  border-radius: var(--r-round);
+  flex: none;
+}
+
+.state-dot--ok::before {
+  background: var(--ok);
+}
+
+.state-dot--danger::before {
+  background: var(--danger);
+}
+
+.spark__base {
+  stroke: var(--line-strong);
+  stroke-width: 1;
+  vector-effect: non-scaling-stroke;
+}
+
+.btn--unavailable {
+  opacity: 0.45; /* DESIGN §6 disabled look, but still focusable so its note is heard */
+  cursor: not-allowed;
+}
+
+.table-scroll {
+  overflow-x: auto;
+}
+
+.table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: var(--fs-small);
+}
+
+.table th {
+  text-align: left;
+  font-weight: 400;
+  color: var(--ink-2);
+  padding: 0 var(--s-4) var(--s-2) 0;
+  border-bottom: 1px solid var(--line);
+  white-space: nowrap;
+}
+
+.table td {
+  padding: var(--s-3) var(--s-4) var(--s-3) 0;
+  border-bottom: 1px solid var(--line);
+  white-space: nowrap;
+}
+
+.log {
+  height: var(--log-h);
+  overflow-y: auto;
+  padding: var(--s-4);
+  border-radius: var(--r-ctl);
+  background: var(--surface);
+  font-family: var(--font-mono);
+  font-size: var(--fs-meta);
+}
+
+.log__list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  display: grid;
+  gap: var(--s-1);
+}
+
+.log__line {
+  display: grid;
+  grid-template-columns: auto minmax(0, var(--col-bar)) minmax(0, 1fr);
+  gap: var(--s-4);
+}
+
+.log__time {
+  color: var(--ink-3);
+}
+
+.log__type {
+  color: var(--ink); /* not --shared: blue means "already stored" only (§1 rule 1) */
+  font-weight: 500;
+  overflow-wrap: anywhere;
+}
+
+.log__data {
+  color: var(--ink-2);
+  overflow-wrap: anywhere;
+}
+
+.row--user {
+  /* Fixed last column: your own row has no actions, rows still line up. */
+  grid-template-columns: minmax(0, 1fr) var(--col-size) var(--col-bar) var(--col-date) var(--col-size) var(--col-user-actions);
+}
+
+.row--disabled .row__name {
+  color: var(--ink-2);
+}
+
+.row__cell {
+  font-size: var(--fs-small);
+}
+
+.row__buttons {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: var(--s-2) var(--s-5);
+}
+
+.row__summary {
+  display: none;
+}
+
+/* The disable confirm takes a full second line of the row. */
+.row--user .confirm--inline {
+  grid-column: 1 / -1;
+}
+
+.row--user .row__buttons:has(.confirm--inline) {
+  grid-column: 1 / -1;
+  justify-content: flex-start;
+}
+
 /* ---- compact and phone --------------------------------------------------------------------------- */
 
 @media (max-width: 1199px) {
@@ -1113,6 +1390,17 @@ a.row__name:hover {
   .row--file .row__date,
   .row--file .row__owner {
     display: none;
+  }
+  /* Compact: name, files, status, actions (role shows in the actions'
+   * wording; last seen moves out). */
+  .row--user {
+    grid-template-columns: minmax(0, 1fr) var(--col-size) var(--col-user-actions);
+  }
+  .row--user .row__cell:not(.state-dot) {
+    display: none;
+  }
+  .row--user .row__summary {
+    display: block;
   }
 }
 
@@ -1171,6 +1459,22 @@ a.row__name:hover {
   .strip-row__note {
     grid-column: 1;
   }
+  .row--user {
+    grid-template-columns: minmax(0, 1fr) auto;
+  }
+  .row--user .row__cell:not(.state-dot) {
+    display: none;
+  }
+  .row--user .row__buttons {
+    grid-column: 1 / -1;
+    justify-content: flex-start;
+  }
+  .log__line {
+    grid-template-columns: auto minmax(0, 1fr);
+  }
+  .log__data {
+    grid-column: 1 / -1;
+  }
 }
 
 /* ---- reduced motion (DESIGN §9) ------------------------------------------------------------------ */
@@ -1187,6 +1491,7 @@ a.row__name:hover {
   }
   .tile,
   .blk,
+  .hist__bar,
   .dedup__fill,
   .dedup__sent {
     transition: none;

@@ -143,6 +143,15 @@
   --t-grow: 600ms; /* block width change between modes */
   --rise: 16px;
   --details-w: 400px;
+  /* M11: Engine and Users (DESIGN §8.6, §8.7) */
+  --qr-size: 112px;
+  --qr-fg: #17242b; /* the same in both themes: cameras read dark-on-light codes */
+  --qr-bg: #f7f9f8;
+  --spark-w: 120px; /* DESIGN §6 sparkline 120 × 28 */
+  --spark-h: 28px;
+  --hist-h: 56px;
+  --log-h: 360px; /* event log viewport */
+  --col-user-actions: 200px; /* Make admin / Make student, Disable / Enable */
   --col-actions: calc(3 * var(--ctl-h) + 2 * var(--s-1)); /* Download, Compare, More */
 }
 

@@ -578,3 +578,42 @@ It puts version 1's block hashes in a hash table (hash → first index), then lo
 - Why does the details panel say "used 6 times" and not "shared by 6 files"? *(The index stores a reference count; one file can reference a block twice; counting distinct files would mean reading every recipe.)*
 - Why are comparisons over 1 GB refused? *(Fixed mode reads both files in full; one request must not keep a worker busy for minutes.)*
 - Why did fixed mode report 122 matching blocks and not 0? *(Blocks before the insertion are unchanged; only those after it shift.)*
+
+## M11 — Engine and Users screens, system states
+
+### What it does
+- **Engine** (`web/src/screens/Engine.tsx`): the storage engine, live.
+  - Server facts and LAN addresses with QR codes, so other laptops can connect; the join code.
+  - The write-ahead log (current LSN, records since the last checkpoint, "Checkpoint now").
+  - The block index: entries, directory depth, bucket fill, and the buffer pool hit rate with a 60 s sparkline.
+  - Containers, with a histogram of how full each one is.
+  - Integrity, the recovery history (every start, "clean" or "recovered"), and the event log.
+- **Users** (`web/src/screens/Users.tsx`): everyone with their files and storage. An admin can make someone an admin or a student, and disable or enable them; disabling signs that person out everywhere at once. The join code can be copied or rotated.
+- **Admin API** (`server/src/api/admin.c`): users, user changes, events, recovery history, and addresses.
+- **System states:** while recovering, the server counts records replayed so far, and the page shows that count. Offline now dims only charts, not text.
+
+### Why it is designed this way
+- **Recovery history must survive a crash,** because a crash is exactly what it records. Each start appends a fixed 64-byte record with its own CRC to `data/recoveries` and fsyncs it. A record torn by a crash fails its CRC and is skipped. The same idea as the WAL, in miniature.
+- **The event log is kept in memory, in a ring** (a circular buffer of the last 256 events). It is for watching live; writing every event to disk would add an fsync per event for no gain.
+- **The hit-rate sparkline uses raw counters.** A rate since start barely moves after a while, so the server sends hits and misses, and the browser charts the rate per 2 s interval.
+- **An admin cannot demote or disable themself,** so a lab can never lock itself out from the web.
+- **QR codes are drawn as SVG paths,** coloured from tokens and dark-on-light in both themes, because phone cameras read that most reliably.
+
+### OS and DBMS concepts
+- **Durable append-only logs with per-record checksums** (the recovery history), and a ring buffer (the event log).
+- **Buffer pool hit rate:** how often a page lookup finds the page already in memory. With a no-steal policy, a full pool of dirty pages forces a checkpoint, and the "Dirty pages" number shows that pressure.
+- **Extendible hashing** made visible: global depth and bucket count grow as blocks arrive.
+- **Session revocation:** disabling a user deletes their session hashes from `data/sessions` and closes their WebSockets.
+
+### Likely examiner questions
+
+**Q1. "You kill the server during the demo. What does the Engine screen show afterwards, and how do you know it is true?"**
+The recovery history's newest row says "Recovered", with the number of log records replayed and transactions redone. Those numbers come from the engine's replay loop at start-up. They are written to `data/recoveries` with a CRC before the server reports ready. The event log's first line is the same `engine.recovery` event. A Playwright test does exactly this with a real SIGKILL.
+
+**Q2. "Why is the hit rate high, and when would it drop?"**
+The block index's bucket pages for a small lab fit in the 16 MB buffer pool, so almost every lookup hits memory. It drops when the index grows past the pool (many millions of blocks) or right after a restart, when the pool is cold. The sparkline shows the rate per 2 s interval, so a burst of misses after a restart is visible.
+
+### More questions to practise
+- What happens to a disabled student's open browser tab? *(Its WebSocket is closed and the next request gets 401, so it shows "Your session ended".)*
+- Why are "Run cleanup" and "Scan now" disabled? *(Cleanup and the integrity scan are built in M12; the server answers 501 until then, and the screen says so.)*
+- Why does rotating the join code not sign anybody out? *(The code is only checked when an account is created; sessions are separate.)*

@@ -139,6 +139,9 @@ struct nx_hub {
     bool work; /* something to send or reap */
     pthread_t broadcaster, ticker;
     uint64_t last_ping_ms;
+    /* Event log (under mu): a ring of malloc'd JSON texts. */
+    char *log[NX_EVENT_LOG];
+    size_t log_head, log_len;
 };
 
 static void q_free_all(client *c)
@@ -453,6 +456,8 @@ void nx_hub_destroy(nx_hub *h)
         c = next;
     }
     pthread_cond_destroy(&h->cv);
+    for (size_t i = 0; i < h->log_len; i++)
+        free(h->log[(h->log_head + i) % NX_EVENT_LOG]);
     pthread_mutex_destroy(&h->mu);
     free(h);
 }
@@ -477,7 +482,22 @@ void nx_hub_publish(nx_hub *h, const char *type, const char *data_json, nx_audie
         return;
     }
     bool is_stats = strcmp(type, "stats.updated") == 0;
+    bool logged = !is_stats && strcmp(type, "upload.progress") != 0;
+    char *copy = logged ? malloc(j.len + 1) : NULL;
+    if (copy)
+        memcpy(copy, j.buf, j.len + 1);
     pthread_mutex_lock(&h->mu);
+    if (copy) {
+        size_t slot = (h->log_head + h->log_len) % NX_EVENT_LOG;
+        if (h->log_len == NX_EVENT_LOG) { /* full: the oldest goes */
+            free(h->log[h->log_head]);
+            h->log_head = (h->log_head + 1) % NX_EVENT_LOG;
+            slot = (h->log_head + h->log_len - 1) % NX_EVENT_LOG;
+        } else {
+            h->log_len++;
+        }
+        h->log[slot] = copy;
+    }
     for (client *c = h->clients; c; c = c->next) {
         bool to = aud.kind == NX_AUD_OTHERS
                       ? !c->admin && c->user_id != aud.user_id
@@ -518,4 +538,17 @@ size_t nx_hub_client_count(nx_hub *h)
     size_t n = h->count;
     pthread_mutex_unlock(&h->mu);
     return n;
+}
+
+void nx_hub_recent(nx_hub *h, size_t limit, nx_json *out)
+{
+    nx_json_arr_open(out);
+    pthread_mutex_lock(&h->mu);
+    size_t n = limit < h->log_len ? limit : h->log_len;
+    for (size_t i = h->log_len - n; i < h->log_len; i++) {
+        const char *e = h->log[(h->log_head + i) % NX_EVENT_LOG];
+        nx_json_raw(out, e, strlen(e));
+    }
+    pthread_mutex_unlock(&h->mu);
+    nx_json_arr_close(out);
 }

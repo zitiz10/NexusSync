@@ -486,3 +486,48 @@ An independent review (Impeccable critique method, 16 screenshots plus source, c
 2. **The minimap window's side edges** are `--ink` over blue at 2.1:1. The top and bottom edges sit on the panel and pass, so the window stays findable.
 3. **Both pickers can select the same file.** It is a valid comparison (everything matches), and the summary says so.
 4. **The segmented control animates `color`.** DESIGN §9 lists color among hover transitions, so this is allowed.
+
+## D-046 Admin API details: event log, recovery history, live recovery progress (M11)
+
+- **Event log.** The WebSocket hub already sees every event, so it keeps the last 256 in a ring (malloc'd JSON texts under the hub mutex). `stats.updated` and `upload.progress` are left out: at up to 2 per second and one per chunk request, they would push the engine events out. The ring lives in memory, so a restart starts a fresh log, and its first entry is that start's `engine.recovery`. Option rejected: a log file on disk. It would add another fsync per event, for a log that is meant to be watched live.
+- **Recovery history** must survive restarts (the demo kills the server and then shows the history), so it is a file: `data/recoveries`, an 8-byte header and then 64-byte fixed records with a CRC each. Each record is appended and fsynced once per start. A torn last record fails its CRC, is skipped, and is overwritten by the next append. Every start is recorded; the result is "clean" when nothing was replayed, cut, or repaired, else "recovered". A start that fails to open the engine cannot be recorded; the server log has it.
+- **Live progress while recovering (D-039 item 2).** `nx_engine_config.replay_progress` is an optional atomic counter. The replay loop stores the records redone after each transaction, and `/api/health` reports it as `progress.recordsReplayed`. The total is not known before the log has been read, so the page shows a count ("1,204 records so far"), not a fraction.
+- **Role and status changes.** An admin cannot change their own role or status (409 `cannot_change_self`), so the lab cannot lose its last admin from the web. Disabling a user deletes all of their sessions and closes their WebSockets at once.
+- **Cleanup and scan** (`POST /api/admin/gc`, `/api/admin/scan`) answer 501 `not_built_yet` until M12 implements them. The Engine screen shows those actions as unavailable rather than letting them fail.
+
+**D-039 follow-up (M11).**
+- Item 1 is resolved: offline dims only the data visuals and keeps text at full contrast (DESIGN §8.8 updated, checked in Playwright by computed opacity).
+- Item 2 is resolved: `/api/health` reports `recordsReplayed` during recovery (D-046), and the recovering page shows it.
+- Items 3 and 4 stand as written.
+
+## D-047 M11 design review: what was fixed, what is left (M11)
+
+An independent review (Impeccable critique method; code, tokens, and screenshots) scored Engine and Users **27/40**.
+
+**P1, fixed and covered by Playwright:**
+1. The event log keyed rows by position. Once the 200-line ring dropped its oldest event, every row remounted, and screen readers could re-announce the whole `role=log`. Rows now carry a stable client id.
+2. Focus fell to `<body>` after the Disable, Rotate, and role actions. Focus now follows the action:
+   - after Disable, to "Enable";
+   - after Rotate, to "Copy";
+   - after a cancel or Escape, back to the button that opened the confirm;
+   - after a role change, it stays on the role button (`aria-disabled` while busy, not `disabled`).
+
+**P2/P3 fixed:**
+- Role changes offer Undo, and the disable confirm takes a full row line.
+- Status words and the failure count are ink with coloured dots (contrast).
+- The QR quiet zone is 4 modules (the standard), for dark mode.
+- The sparkline uses a fixed 0–100% scale with a baseline, and the text gives "now" and the minute's lowest.
+- The histogram's text equivalent is visible.
+- Failed requests show an inline line with Retry, and polling pauses while offline or hidden.
+- Compact and phone user rows keep role, files, and last seen in a meta line.
+- Event types are ink, not `--shared` (§1 rule 1).
+- The histogram transition is off under reduced motion.
+- Unavailable actions stay focusable, so their note is heard.
+- The join code is announced only after a rotate, "Copied." clears, and a stale error clears.
+- Recovery history says when it shows only the latest 10.
+- One term: "records replayed".
+
+**Left on purpose:**
+1. **Dimmed offline charts are 2.76:1 in light,** below the 3:1 graphics floor. Dimming is the signal itself, the banner states the cause, and full-contrast charts would not show staleness. Recorded in DESIGN §8.8.
+2. **`.btn` animates `border-color` and `color`** (M8 component). DESIGN §9 lists color among hover transitions, so this is allowed.
+3. **Uneven column heights on the desktop Engine grid.** Sections are independent; a masonry layout would add complexity for little gain.

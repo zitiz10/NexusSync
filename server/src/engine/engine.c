@@ -79,6 +79,7 @@ void nx_engine_config_defaults(nx_engine_config *cfg)
     cfg->verify_on_read = true;
     cfg->verify_on_commit = true;
     cfg->wal_segment_size = NX_WAL_DEFAULT_SEGMENT;
+    cfg->replay_progress = NULL;
 }
 
 static void hex8(const uint8_t hash[32], char out[17])
@@ -745,6 +746,8 @@ static int replay_record(const nx_wal_rec *r, void *vctx)
         }
         e->rinfo.records_replayed += x->pending.n;
         e->rinfo.txns_redone++;
+        if (e->cfg.replay_progress)
+            atomic_store(e->cfg.replay_progress, e->rinfo.records_replayed);
         e->stable_lsn = r->lsn; /* a checkpoint now may start after this txn */
         nx_txn_free(&x->pending);
         x->open = false;

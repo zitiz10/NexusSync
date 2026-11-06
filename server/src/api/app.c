@@ -1,6 +1,7 @@
 /* app.c — server state, join code, background checkpoints. See app.h. */
 #include "api/app.h"
 
+#include "api/admin.h"
 #include "api/auth.h"
 #include "api/compare.h"
 #include "api/stats.h"
@@ -112,6 +113,7 @@ int nx_app_create(const nx_config *cfg, nx_app **out)
     app->started_ms = plat_now_mono_ms();
     atomic_init(&app->state, NX_APP_RECOVERING);
     atomic_init(&app->bg_stop, false);
+    atomic_init(&app->replayed, 0);
     pthread_mutex_init(&app->join_mu, NULL);
     char code[NX_JOIN_CODE_LEN + 16];
     if (nx_join_code_read(cfg->data_dir, code) != 0) {
@@ -189,6 +191,7 @@ int nx_app_open_engine(nx_app *app)
     ec.pool_pages = app->cfg.buffer_pool_pages;
     ec.verify_on_read = app->cfg.verify_on_read;
     ec.verify_on_commit = app->cfg.verify_on_commit;
+    ec.replay_progress = &app->replayed;
     if (nx_engine_open(&ec, &app->engine) != 0) {
         atomic_store(&app->state, NX_APP_FAILED);
         return -1;
@@ -201,6 +204,10 @@ int nx_app_open_engine(nx_app *app)
              ",\"pagesRepaired\":%" PRIu64 ",\"durationMs\":%" PRIu64 "}",
              ri.records_replayed, ri.txns_redone, ri.pages_repaired, ri.ms);
     nx_hub_publish(app->hub, "engine.recovery", data, (nx_audience){NX_AUD_ADMINS, 0});
+    /* Recovery history for the Engine screen (D-046). Losing it is not a
+     * reason to refuse to start. */
+    if (nx_recovery_log_append(app->cfg.data_dir, plat_now_unix_ms(), &ri) != 0)
+        LOG_WARN("app", "could not record this start in data/recoveries");
     if (pthread_create(&app->bg, NULL, bg_main, app) == 0)
         app->bg_running = true;
     else

@@ -8,6 +8,10 @@
 // - A 401 on any call except sign-in means the session ended: listeners
 //   are told so the app can return to the sign-in screen (DESIGN §8.8).
 import type {
+  Addresses,
+  AdminUser,
+  Recovery,
+  ServerEvent,
   BlockMap,
   CompareResult,
   ChunksReply,
@@ -138,6 +142,17 @@ export const api = {
       signal ? { signal } : {},
     ),
   stats: () => request<Stats>('/api/stats'),
+
+  // Admin (SPEC §12 "Admin").
+  adminUsers: () => request<{ items: AdminUser[] }>('/api/admin/users'),
+  adminUpdateUser: (id: number, change: { role?: 'admin' | 'student'; status?: 'active' | 'disabled' }) =>
+    request<AdminUser>(`/api/admin/users/${id}`, { method: 'POST', json: change }),
+  joinCode: () => request<{ joinCode: string }>('/api/admin/join-code'),
+  rotateJoinCode: () => request<{ joinCode: string }>('/api/admin/join-code/rotate', { method: 'POST' }),
+  checkpoint: () => request<{ lsn: number; pages: number; durationMs: number }>('/api/admin/checkpoint', { method: 'POST' }),
+  events: (limit = 200) => request<{ items: ServerEvent[] }>(`/api/admin/events?limit=${limit}`),
+  recoveries: () => request<{ items: Recovery[] }>('/api/admin/recoveries'),
+  addresses: () => request<Addresses>('/api/admin/addresses'),
   blockmap: () => request<BlockMap>('/api/blockmap?tiles=384'),
   fileTiles: (id: number, signal?: AbortSignal) =>
     request<FileTiles>(`/api/blockmap?tiles=384&file=${id}`, signal ? { signal } : {}),

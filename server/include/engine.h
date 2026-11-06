@@ -17,6 +17,7 @@
 #include "engine/exthash.h"
 #include "engine/recipe.h"
 
+#include <stdatomic.h>
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
@@ -37,6 +38,9 @@ typedef struct {
     bool verify_on_read;
     bool verify_on_commit;
     uint64_t wal_segment_size; /* bytes per WAL segment (64 MB) */
+    /* Optional: counts log records redone while nx_engine_open replays, so
+     * /api/health can show live progress (D-046). NULL to skip. */
+    _Atomic uint64_t *replay_progress;
 } nx_engine_config;
 
 void nx_engine_config_defaults(nx_engine_config *cfg);

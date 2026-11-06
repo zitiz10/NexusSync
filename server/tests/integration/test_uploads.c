@@ -13,6 +13,7 @@
  *   - cancel; access rules (owner, shared, admin); list filters and
  *     paging; detail with versions and block counts; delete; fsck clean
  */
+#include "api/admin.h"
 #include "api/stats.h"
 #include "cJSON.h"
 #include "util/json_in.h"
@@ -1032,12 +1033,205 @@ static void test_compare(void)
     fx_stop(&f);
 }
 
+/* The admin API (M11): users with their files, role and status changes
+ * (a disabled user is signed out everywhere), the event log, recovery
+ * history (including a torn record), addresses, M12 placeholders. */
+static void test_admin(void)
+{
+    fx f;
+    REQUIRE(fx_start(&f, "up_admin", true, 4, 16) == 0);
+    const char *admin = f.admin_cookie;
+    char riya[300], kabir[300];
+    join(&f, "riya", riya);
+    join(&f, "kabir", kabir);
+    nx_splitmix rng = {31};
+    uint8_t *d = content(&rng, 50000);
+    uint64_t id, sent;
+    REQUIRE(upload(&f, riya, "a.csv", d, 50000, NULL, &id, &sent) == 201);
+
+    cJSON *j;
+    big r;
+    REQUIRE(call(f.port, "GET", "/api/admin/users", admin, NULL, NULL, 0, &r) == 0);
+    CHECK(r.status == 200);
+    j = nx_json_parse(r.body, r.len);
+    big_free(&r);
+    const cJSON *items = cJSON_GetObjectItemCaseSensitive(j, "items"), *u;
+    uint32_t riya_id = 0, kabir_id = 0, admin_id = 0;
+    int seen = 0;
+    cJSON_ArrayForEach(u, items)
+    {
+        const char *name = cJSON_GetObjectItemCaseSensitive(u, "username")->valuestring;
+        uint32_t uid = (uint32_t)jnum(u, "id");
+        if (strcmp(name, "riya") == 0) {
+            riya_id = uid;
+            CHECK(jnum(u, "files") == 1 && jnum(u, "bytes") == 50000);
+            CHECK(strcmp(cJSON_GetObjectItemCaseSensitive(u, "status")->valuestring, "active") == 0);
+            CHECK(cJSON_IsString(cJSON_GetObjectItemCaseSensitive(u, "lastSeenAt")));
+        } else if (strcmp(name, "kabir") == 0) {
+            kabir_id = uid;
+            CHECK(jnum(u, "files") == 0);
+        } else {
+            admin_id = uid;
+            CHECK(strcmp(cJSON_GetObjectItemCaseSensitive(u, "role")->valuestring, "admin") == 0);
+        }
+        seen++;
+    }
+    CHECK(seen == 3 && riya_id && kabir_id && admin_id);
+    cJSON_Delete(j);
+
+    char path[96];
+    /* Students cannot use the admin API. */
+    REQUIRE(call(f.port, "GET", "/api/admin/users", riya, NULL, NULL, 0, &r) == 0);
+    CHECK(r.status == 403);
+    big_free(&r);
+
+    /* Make Kabir an admin: his own session now sees admin routes. */
+    snprintf(path, sizeof path, "/api/admin/users/%" PRIu32, kabir_id);
+    const char *mk = "{\"role\":\"admin\"}";
+    REQUIRE(call(f.port, "POST", path, admin, "application/json", mk, strlen(mk), &r) == 0);
+    CHECK(r.status == 200 && strstr(bstr(&r), "\"role\":\"admin\""));
+    big_free(&r);
+    REQUIRE(call(f.port, "GET", "/api/admin/users", kabir, NULL, NULL, 0, &r) == 0);
+    CHECK(r.status == 200);
+    big_free(&r);
+    const char *back = "{\"role\":\"student\"}";
+    REQUIRE(call(f.port, "POST", path, admin, "application/json", back, strlen(back), &r) == 0);
+    CHECK(r.status == 200 && strstr(bstr(&r), "\"role\":\"student\""));
+    big_free(&r);
+
+    /* Disable Riya: her session ends at once, sign-in is refused; enable
+     * again and she can sign in. */
+    resp wr;
+    plat_sock ws = ws_open(&f, riya, NULL, &wr);
+    REQUIRE(ws != PLAT_SOCK_INVALID && wr.status == 101);
+    snprintf(path, sizeof path, "/api/admin/users/%" PRIu32, riya_id);
+    const char *off = "{\"status\":\"disabled\"}";
+    REQUIRE(call(f.port, "POST", path, admin, "application/json", off, strlen(off), &r) == 0);
+    CHECK(r.status == 200 && strstr(bstr(&r), "\"status\":\"disabled\"") && strstr(bstr(&r), "\"files\":1"));
+    big_free(&r);
+    char buf[256];
+    size_t len;
+    int op;
+    do {
+        op = ws_read(ws, buf, sizeof buf, &len);
+    } while (op == NX_WS_TEXT || op == NX_WS_PING);
+    CHECK(op == NX_WS_CLOSE || op < 0); /* the socket was closed */
+    plat_sock_close(ws);
+    REQUIRE(call(f.port, "GET", "/api/me", riya, NULL, NULL, 0, &r) == 0);
+    CHECK(r.status == 401);
+    big_free(&r);
+    const char *login = "{\"username\":\"riya\",\"password\":\"long-enough-1\"}";
+    REQUIRE(call(f.port, "POST", "/api/auth/login", NULL, "application/json", login, strlen(login), &r) == 0);
+    CHECK(r.status == 403 && strstr(bstr(&r), "account_disabled"));
+    big_free(&r);
+    const char *on = "{\"status\":\"active\"}";
+    REQUIRE(call(f.port, "POST", path, admin, "application/json", on, strlen(on), &r) == 0);
+    CHECK(r.status == 200);
+    big_free(&r);
+    REQUIRE(call(f.port, "POST", "/api/auth/login", NULL, "application/json", login, strlen(login), &r) == 0);
+    CHECK(r.status == 200);
+    big_free(&r);
+
+    /* Refusals: yourself, unknown users, bad bodies. */
+    snprintf(path, sizeof path, "/api/admin/users/%" PRIu32, admin_id);
+    REQUIRE(call(f.port, "POST", path, admin, "application/json", back, strlen(back), &r) == 0);
+    CHECK(r.status == 409 && strstr(bstr(&r), "cannot_change_self"));
+    big_free(&r);
+    REQUIRE(call(f.port, "POST", "/api/admin/users/999", admin, "application/json", back, strlen(back), &r) == 0);
+    CHECK(r.status == 404);
+    big_free(&r);
+    snprintf(path, sizeof path, "/api/admin/users/%" PRIu32, kabir_id);
+    static const char *bad[] = {"{}", "{\"role\":\"root\"}", "{\"status\":1}", "[]", "nope"};
+    for (size_t i = 0; i < sizeof bad / sizeof bad[0]; i++) {
+        REQUIRE(call(f.port, "POST", path, admin, "application/json", bad[i], strlen(bad[i]), &r) == 0);
+        CHECK(r.status == 400);
+        big_free(&r);
+    }
+
+    /* Event log: engine and file events, not the chatty ones. */
+    REQUIRE(call(f.port, "GET", "/api/admin/events?limit=256", admin, NULL, NULL, 0, &r) == 0);
+    CHECK(r.status == 200 && strstr(bstr(&r), "\"type\":\"engine.recovery\"") &&
+          strstr(bstr(&r), "\"type\":\"upload.committed\"") && !strstr(bstr(&r), "stats.updated") &&
+          !strstr(bstr(&r), "upload.progress"));
+    big_free(&r);
+    REQUIRE(call(f.port, "GET", "/api/admin/events?limit=1", admin, NULL, NULL, 0, &r) == 0);
+    j = nx_json_parse(r.body, r.len);
+    CHECK(cJSON_GetArraySize(cJSON_GetObjectItemCaseSensitive(j, "items")) == 1);
+    cJSON_Delete(j);
+    big_free(&r);
+    REQUIRE(call(f.port, "GET", "/api/admin/events?limit=0", admin, NULL, NULL, 0, &r) == 0);
+    CHECK(r.status == 400);
+    big_free(&r);
+
+    /* Recovery history: this start, a clean one. */
+    REQUIRE(call(f.port, "GET", "/api/admin/recoveries", admin, NULL, NULL, 0, &r) == 0);
+    CHECK(r.status == 200 && strstr(bstr(&r), "\"result\":\"clean\""));
+    big_free(&r);
+
+    /* Addresses and the M12 placeholders. */
+    REQUIRE(call(f.port, "GET", "/api/admin/addresses", admin, NULL, NULL, 0, &r) == 0);
+    CHECK(r.status == 200 && strstr(bstr(&r), "\"items\":["));
+    big_free(&r);
+    REQUIRE(call(f.port, "POST", "/api/admin/gc", admin, NULL, NULL, 0, &r) == 0);
+    CHECK(r.status == 501);
+    big_free(&r);
+    REQUIRE(call(f.port, "POST", "/api/admin/scan", admin, NULL, NULL, 0, &r) == 0);
+    CHECK(r.status == 501);
+    big_free(&r);
+
+    /* Admin stats carry the server facts. */
+    REQUIRE(call(f.port, "GET", "/api/stats", admin, NULL, NULL, 0, &r) == 0);
+    CHECK(strstr(bstr(&r), "\"server\":{\"version\":") && strstr(bstr(&r), "\"cdcAvg\":4096"));
+    big_free(&r);
+    free(d);
+    fx_stop(&f);
+}
+
+/* data/recoveries keeps the newest records first and survives a torn tail. */
+static void test_recovery_log(void)
+{
+    char dir[600];
+    nx_test_tmpdir("recovery_log", dir, sizeof dir);
+    REQUIRE(plat_mkdir_p(dir) == 0);
+    nx_recovery_entry v[8];
+    CHECK(nx_recovery_log_read(dir, v, 8) == 0); /* no file yet */
+    for (uint64_t i = 1; i <= 3; i++) {
+        nx_engine_recovery r = {.records_replayed = i * 10, .txns_redone = i, .ms = i};
+        REQUIRE(nx_recovery_log_append(dir, 1000 * i, &r) == 0);
+    }
+    REQUIRE(nx_recovery_log_read(dir, v, 8) == 3);
+    CHECK(v[0].at_ms == 3000 && v[0].r.records_replayed == 30 && v[2].at_ms == 1000);
+    /* Tear the last record: it is skipped; the next append replaces it. */
+    char path[700];
+    snprintf(path, sizeof path, "%s/recoveries", dir);
+    plat_file *fl;
+    REQUIRE(plat_file_open(path, PLAT_O_WRITE, &fl) == 0);
+    uint64_t size;
+    REQUIRE(plat_file_size(fl, &size) == 0);
+    REQUIRE(plat_file_truncate(fl, size - 10) == 0);
+    plat_file_close(fl);
+    CHECK(nx_recovery_log_read(dir, v, 8) == 2 && v[0].at_ms == 2000);
+    nx_engine_recovery r4 = {.records_replayed = 40};
+    REQUIRE(nx_recovery_log_append(dir, 4000, &r4) == 0);
+    CHECK(nx_recovery_log_read(dir, v, 8) == 3 && v[0].at_ms == 4000 && v[1].at_ms == 2000);
+    /* A flipped bit fails the CRC. */
+    REQUIRE(plat_file_open(path, PLAT_O_WRITE, &fl) == 0);
+    uint8_t b;
+    REQUIRE(plat_pread(fl, &b, 1, 8 + 9) == 1);
+    b ^= 1;
+    REQUIRE(plat_pwrite_all(fl, &b, 1, 8 + 9) == 0);
+    plat_file_close(fl);
+    CHECK(nx_recovery_log_read(dir, v, 8) == 2);
+}
+
 static const nx_test_case TESTS[] = {
     NX_CASE(test_protocol_and_validation),
     NX_CASE(test_dedup_versions_resume),
     NX_CASE(test_files_access_and_listing),
     NX_CASE(test_stats_and_blockmap),
     NX_CASE(test_compare),
+    NX_CASE(test_admin),
+    NX_CASE(test_recovery_log),
 };
 
 int main(int argc, char **argv)
