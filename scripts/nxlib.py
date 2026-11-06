@@ -161,6 +161,12 @@ class Cli:
         r = self.run("login", self.username)
         assert r.returncode == 0, r.stderr
 
+    def stats(self, as_json: bool = True) -> dict | str:
+        """`nexus stats`: the /api/stats reply (--json), or the plain text."""
+        r = self.run(*(["--json"] if as_json else []), "stats")
+        assert r.returncode == 0, r.stderr
+        return json.loads(r.stdout) if as_json else r.stdout
+
     def put(self, path: Path, *flags: str) -> dict | None:
         """The committed file (dict), or None if the upload failed."""
         r = self.run("--json", "put", str(path), *flags)

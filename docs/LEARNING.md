@@ -654,3 +654,34 @@ Two protections. First, the grace period: a block is freed only if it was stored
 - Why 50%? *(Rewriting a container costs copying its live part. Below half live, the copy is smaller than the space it frees.)*
 - Why does the scan keep its last result in a file? *(The demo kills the server; the Engine screen should still say when the last scan ran.)*
 - What does `--rebuild-index` do with blocks no file uses? *(It indexes them with refcount 0; the next cleanup frees them.)*
+
+## M13 — CLI stats, demo tooling, evaluation
+
+### What it does
+- **`nexus stats`** (`cli/main.c`): prints the numbers from `/api/stats` in a few plain lines: files, file data, bytes on disk, the deduplication ratio, and bytes not sent. Admins also see the WAL, the index, containers, the last scan, and the next cleanup. With `--json` it prints the server's reply as it is, for scripts.
+- **`scripts/make_demo_data.py`**: writes the demo files of DEMO.md §2 from fixed seeds, so every run on every OS gives byte-identical files and the demo's numbers repeat. `--scale` makes small copies for tests.
+- **`scripts/demo_reset.py`**: gives a clean demo server in about a second. It refuses while a server is running and asks before deleting anything. It only deletes a real NexusSync data directory, keeps the passwords in `demo.env` (never printed), and creates admin, riya and arjun.
+- **`eval/run_eval.py`**: the evaluation of SPEC §16. It compares five storage methods per data category and measures what each upload sent over the network, upload and download speed, recovery time after a hard kill, checkpoint times, and the block size distribution. Output: CSV tables, `summary.md`, and charts.
+- **`server/tests/tools/blockhash`**: prints the blocks the server would store for any file. The evaluation's block baselines use it.
+
+### Why it is designed this way
+- **The baselines use the server's own chunker,** not a Python copy. A copy could drift from the C code, and in Python it would be about 100 times slower. The evaluation also checks itself: after the first pass, the bytes the server stores must equal the bytes the CDC baseline predicted, or the run fails.
+- **Every result is measured, never assumed.** The evaluation found that the demo's "compressed files barely deduplicate" example was wrong for zip files. Zip compresses each member separately, so unchanged members still deduplicate. The demo now uses a `.tar.gz` (one compressed stream) for the limitation, and the zip result is an examiner talking point (DEMO.md §2).
+- **Localhost throughput is labelled as such.** On 127.0.0.1 there is no network limit, so the numbers measure the software. Real LAN numbers come from the team's run on the demo network.
+
+### OS and DBMS concepts
+- Deduplication granularity: whole-file versus fixed blocks versus content-defined blocks, and why compression works against deduplication.
+- Measuring recovery cost: the time to replay the log grows with the number of records after the last checkpoint. This is why checkpoints exist.
+- Reproducibility: seeded generators and a fixed order make experiments repeatable.
+
+### Likely examiner questions
+
+**Q1. "gzip beats your deduplication on a single CSV file. Why not just compress?"**
+They do different jobs. gzip shrinks one file by removing repetition *inside* it. Deduplication removes repetition *across* files and versions, and it also saves network transfer, because only missing blocks are sent. The two combine: compressing each unique block after deduplication is a stretch goal (SPEC §18). The `storage` table shows both, per category.
+
+**Q2. "Why does an edited .tar.gz send almost everything, but an edited .zip only a little?"**
+gzip compresses the whole tar as one stream. An edit near the start changes the compressor's state, so every byte after it changes. Zip compresses each member file on its own, so the members that did not change stay byte-identical and their blocks are found again.
+
+### More questions to practise
+- How do you know the evaluation's CDC numbers are what the server really stores? *(run_eval checks the server's physical bytes against the baseline and fails on any difference.)*
+- Why are the demo files synthetic? *(The real lab data is collected by the team with permission and never committed; synthetic files only test the tooling and the demo.)*

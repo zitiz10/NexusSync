@@ -113,6 +113,18 @@ def main() -> int:
                 ok = False
         nxlib.say(f"downloaded and verified {checked} files")
 
+        # nexus stats (SPEC §17) reports the same numbers the uploads produced.
+        cli0 = clients[0][0]
+        st = cli0.stats()
+        text = cli0.stats(as_json=False)
+        if st["logicalBytes"] != total or st["files"] != sum(1 for r in results for f, _ in r if f):
+            nxlib.fail(f"nexus stats: logicalBytes {st['logicalBytes']} files {st['files']}, expected {total}")
+            ok = False
+        if st["networkSavedBytes"] != total - sent or "Stored files:" not in text or "Your files:" not in text:
+            nxlib.fail("nexus stats: network saving or the plain-text lines are wrong:\n" + text)
+            ok = False
+        nxlib.say("nexus stats: " + text.splitlines()[0].strip())
+
         srv.stop()
         r = srv.fsck()
         nxlib.say(r.stdout.strip().splitlines()[-1] if r.stdout.strip() else "fsck: no output")

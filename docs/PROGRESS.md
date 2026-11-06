@@ -5,9 +5,9 @@ Resume after an interruption: read `CLAUDE.md`, then this file, re-run the tests
 
 Platforms: macOS (verified locally on Apple Silicon), Linux and Windows (verified in CI once the repo is pushed; see "Open problems").
 
-Sessions so far: session 1 built M1–M3; session 2 built M4–M8; session 3 built M9–M11; session 4 built M12. **The next session starts at M13** and continues to M14.
+Sessions so far: session 1 built M1–M3; session 2 built M4–M8; session 3 built M9–M11; session 4 built M12–M13. **The next session starts at M14.**
 
-**Status (2026-11-06, session 4): M1–M12 done and committed. Next: M13 (CLI `stats`, demo tooling, evaluation).** M11 was re-verified at the start of session 4 (`check.py` passes; Playwright 41/41). Read "Handoff notes" below before starting.
+**Status (2026-11-06, session 4): M1–M13 done and committed. Next: M14 (polish pass and final report).** M11 was re-verified at the start of session 4 (`check.py` passes; Playwright 41/41). Read "Handoff notes" below before starting.
 
 ## M1 Scaffold
 - [x] Repo layout per `CLAUDE.md` (plus `server/src/platform/`); module folders fill in from M2
@@ -111,12 +111,20 @@ Sessions so far: session 1 built M1–M3; session 2 built M4–M8; session 3 bui
 - [x] Full suite: `make test` (ASan+UBSan) and `make tsan` clean, `check.py` passes, web unit 54/54, Playwright 45/45, `-Werror` clean
 
 ## M13 CLI, demo tooling, evaluation
-- [ ] `nexus stats`; `scripts/make_demo_data.py`, `scripts/demo_reset.py`; `eval/run_eval.py` with tables and charts; `crash_test.py 50` (already passing since M7)
+- [x] `nexus stats` (plain lines, `--json`), checked against the real server in `concurrency_test.py`: logical bytes, file count, and network saving equal what the 8 clients uploaded
+- [x] `scripts/make_demo_data.py`: the DEMO §2 files, byte-identical across runs (checked with `diff -r`), 732 MB at full size in 12 s; `--scale` for small sets. Adds `submission.tar.gz` pairs: the evaluation showed zip pairs deduplicate well (zip compresses each member separately), so DEMO §2/§4 now use tar.gz for the "compression hides repetition" step
+- [x] `scripts/demo_reset.py`: fresh server in 0.8 s; refuses while a server runs, asks before deleting, deletes only a NexusSync data dir, passwords in a 0600 `demo.env` and never printed; all three logins checked
+- [x] `eval/run_eval.py` on the full demo data, 3 runs: tables (`summary.md`, 7 CSVs) and 4 charts (PNG + SVG; palette validated with the dataviz checker), all checks passed, including the server's stored bytes equal to the CDC baseline (373.5 MB of 732.3 MB). Exact-chunker baselines through the new `server/tests/tools/blockhash`. matplotlib 3.11.2 installed with the user's OK
+- [x] `crash_test.py 50` passes against the M12+ server (with cleanup during kills; see M12); `check.py` passes
 
 ## M14 Polish and final report
 - [ ] Polish pass across the app (Impeccable `polish`, with the plugin's detector installed); every screen and state at three sizes per DESIGN §13; Playwright end-to-end flow of SPEC §15; final report below
 
-## Handoff notes for M13–M14 (session 4)
+## Handoff notes for M14 (session 4)
+
+**How to resume.** Read `CLAUDE.md`, this file, DESIGN §13, SPEC §14 (M14 row) and §15. Re-run first: `python3 scripts/check.py`, `cd web && npm run e2e` (45 tests). M14: the polish pass across every screen with the Impeccable skill (it is installed now as `anthropic-skills:impeccable`; its detector script is not), every screen and state at three sizes per DESIGN §13, a Playwright end-to-end flow of SPEC §15 (join → upload → identical upload "nothing sent" → download → compare → delete with undo), and the final report below. The real lab evaluation is the team's job: `python3 eval/run_eval.py eval/datasets` (datasets never committed).
+
+## Handoff notes for M13–M14 (session 4, kept for history)
 
 **How to resume.** Read `CLAUDE.md`, this file, SPEC §14 (M13 row), §16, §17. Re-run first: `python3 scripts/check.py`, `cd web && npm run e2e` (45 tests, ~2 min; specs run in name order, `m12` restarts the server with `gc_grace_s = 0` and 1 MB containers, so keep it last or name new specs after it).
 - M13 needs: `nexus stats` (SPEC §17), `scripts/make_demo_data.py`, `scripts/demo_reset.py`, `eval/run_eval.py` (matplotlib: check it is installed, ask before installing). `crash_test.py 50` passes (now with cleanup; `--no-cleanup` is the M7 version).

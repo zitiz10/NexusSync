@@ -37,7 +37,8 @@ Generate with `python3 scripts/make_demo_data.py demo-data/` (deterministic, so 
 - `dataset.csv` (about 300 MB) and `dataset_v2.csv` (same, with 50 rows inserted near the start). Shows an edited file sending very little.
 - `project_src.tar` (about 50 MB) and `project_src_v2.tar` (one source file changed).
 - `lab_manual.txt` (about 5 MB) uploaded by both students. Shows an identical copy sending nothing.
-- `submission.zip` and `submission_v2.zip` (zip of the same tree with one change). Shows the honest limitation: compressed files barely deduplicate.
+- `submission.tar.gz` and `submission_v2.tar.gz` (the same tree as one gzip stream, with the first file changed). Shows the honest limitation: after an edit, a compressed stream changes all the way to its end, so almost nothing is reused.
+- `submission.zip` and `submission_v2.zip` (the same tree zipped, with one change). A good examiner question: zip compresses each member on its own, so the unchanged members still deduplicate (measured in M13 on the full demo data: the v2 zip sent 67 KB of 6.3 MB, the v2 tar.gz 4.7 MB of 5.3 MB). Formats built on zip (docx, xlsx, pptx) behave the same way only when their parts are unchanged.
 - Optional: a Linux ISO of 300–700 MB downloaded in advance for a large identical-upload moment.
 
 Use CSV, text, or tar for "edited file" examples. Do not use PDF, Word, or PowerPoint for that: they are compressed internally, so small edits change most bytes.
@@ -77,7 +78,7 @@ Open `http://<server-ip>:8080` (scan the QR code from the Engine screen), sign i
 | 2:00 | B | Upload the same `dataset.csv` | Finishes in seconds, "Stored. 0 bytes sent instead of 300 MB" | Only fingerprints crossed the network |
 | 2:45 | B | Upload `dataset_v2.csv` | A few blocks sent; becomes version 2 | Content-defined blocks: only blocks near the edit change |
 | 3:30 | Presenter | Compare versions, starts in fixed 4 KB mode, then toggle | Long peach trail in fixed mode, then almost all blue in content-defined mode; hover a block to show its partner | Why fixed-size blocks fail after an insertion, and how a rolling hash fixes it |
-| 5:00 | A | Upload `submission_v2.zip` after `submission.zip` | Mostly peach, little reuse | Honest limitation: compressed files hide repetition |
+| 5:00 | A | Upload `submission_v2.tar.gz` after `submission.tar.gz` | Mostly peach, little reuse | Honest limitation: one compressed stream hides repetition after an edit (a zip, which compresses each file on its own, does better) |
 | 5:45 | A + Engineer | Start uploading the ISO or `project_src.tar`; Engineer hard-kills the server mid-upload (`kill -9 $(pgrep nexusd)` on macOS/Linux, `taskkill /F /IM nexusd.exe` on Windows), then restarts | Clients show "Lost connection, retrying"; projector shows recovery with records replayed; then normal | Write-ahead log, commit point, redo recovery, no-steal buffer pool |
 | 7:00 | Engineer | `./server/build/nexusd --config nexussync.conf --fsck` | "All checks passed" with counts | Invariants I1–I3 verified on disk |
 | 7:30 | A | Retry the interrupted upload | Completes quickly; blocks sent before the crash were kept | Resuming is free because blocks are content-addressed |

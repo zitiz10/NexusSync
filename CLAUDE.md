@@ -105,6 +105,7 @@ make -C server test         # unit + integration tests (under asan where availab
 ./server/build/nexus get <id|name> [-o out]
 ./server/build/nexus ls [--shared]
 ./server/build/nexus rm <id>
+./server/build/nexus stats [--json]
 
 # web
 cd web && npm ci
@@ -119,8 +120,9 @@ python3 scripts/check.py              # C tests + 8-client concurrency test + we
 python3 scripts/concurrency_test.py   # 8 CLI clients upload overlapping files, then fsck
 python3 scripts/gen_gear.py           # regenerates gear tables for C and TS from one seed
 python3 scripts/crash_test.py 50      # 50 random hard kills (SIGKILL / TerminateProcess), fsck after each
-python3 scripts/demo_reset.py         # wipe and seed a clean demo server
-python3 eval/run_eval.py eval/datasets # baselines and charts into eval/results
+python3 scripts/make_demo_data.py demo-data/   # deterministic demo files (DEMO.md §2); --scale 0.02 for a small set
+python3 scripts/demo_reset.py         # wipe and seed a clean demo server (asks first; --yes, --detach)
+python3 eval/run_eval.py eval/datasets # baselines and charts into eval/results (needs matplotlib for charts)
 ```
 
 ## How to work: one autonomous run

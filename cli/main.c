@@ -6,6 +6,7 @@
  *   nexus get <id|name> [-o out]
  *   nexus ls [--shared]
  *   nexus rm <id>
+ *   nexus stats
  *
  * The session (server URL and token) is kept in ~/.nexussync/session with
  * mode 0600 (NEXUS_HOME overrides the directory). The password is asked on
@@ -37,7 +38,8 @@ static void usage(void)
             "       nexus put <file> [--fixed] [--new-file]\n"
             "       nexus get <id|name> [-o out]\n"
             "       nexus ls [--shared]\n"
-            "       nexus rm <id>\n");
+            "       nexus rm <id>\n"
+            "       nexus stats\n");
 }
 
 /* ===== session file ============================================================== */
@@ -658,6 +660,77 @@ static int cmd_rm(nx_client *c, const char *id)
     return rc;
 }
 
+/* ===== stats ================================================================================ */
+
+static const cJSON *obj(const cJSON *o, const char *k) { return cJSON_GetObjectItemCaseSensitive(o, k); }
+
+/* GET /api/stats as a few plain lines (SPEC §17); --json prints the reply as is. */
+static int cmd_stats(nx_client *c)
+{
+    nx_response r;
+    if (nx_client_request(c, "GET", "/api/stats", NULL, NULL, 0, NULL, NULL, &r) != 0) {
+        fprintf(stderr, "nexus: cannot reach the server\n");
+        return 1;
+    }
+    cJSON *j = r.status == 200 ? cJSON_Parse(r.body) : NULL;
+    if (!j) {
+        int f = fail(&r, "reading the statistics");
+        nx_response_free(&r);
+        return f;
+    }
+    if (g_json) {
+        printf("%s\n", r.body);
+    } else {
+        char a[32], b[32], d[32];
+        human_bytes((uint64_t)jnum(j, "logicalBytes"), a, sizeof a);
+        human_bytes((uint64_t)jnum(j, "physicalBytes"), b, sizeof b);
+        human_bytes((uint64_t)jnum(j, "writesSkippedBytes"), d, sizeof d);
+        printf("Stored files:     %.0f files, %s of file data, %.0f users\n", jnum(j, "files"), a,
+               jnum(j, "users"));
+        printf("On disk:          %s of blocks (%.2fx deduplication, %s of writes skipped)\n", b,
+               jnum(j, "ratio"), d);
+        human_bytes((uint64_t)jnum(j, "networkSavedBytes"), a, sizeof a);
+        printf("Network saved:    %s not sent because the server had the blocks\n", a);
+        printf("Uploads (7 days): %.0f\n", jnum(j, "uploadsThisWeek"));
+        const cJSON *mine = obj(j, "mine");
+        if (cJSON_IsObject(mine)) {
+            human_bytes((uint64_t)jnum(mine, "bytes"), a, sizeof a);
+            printf("Your files:       %.0f files, %s, %.1f%% already on the server when uploaded\n",
+                   jnum(mine, "files"), a, jnum(mine, "reusedPercent"));
+        }
+        const cJSON *wal = obj(j, "wal"), *ix = obj(j, "index"), *ct = obj(j, "containers"),
+                    *in = obj(j, "integrity"), *cl = obj(j, "cleanup");
+        if (cJSON_IsObject(wal) && cJSON_IsObject(ix) && cJSON_IsObject(ct)) { /* admins only */
+            human_bytes((uint64_t)jnum(wal, "sizeBytes"), a, sizeof a);
+            printf("Write-ahead log:  LSN %.0f, %.0f records since the last checkpoint, %s\n",
+                   jnum(wal, "lsn"), jnum(wal, "recordsSinceCheckpoint"), a);
+            const cJSON *hr = obj(ix, "bufferHitRate");
+            printf("Block index:      %.0f entries, global depth %.0f, %.0f buckets, %.1f%% average fill\n",
+                   jnum(ix, "entries"), jnum(ix, "globalDepth"), jnum(ix, "buckets"), jnum(ix, "avgFillPercent"));
+            if (cJSON_IsNumber(hr))
+                printf("Buffer pool:      %.1f%% of page lookups found the page in memory\n", hr->valuedouble);
+            human_bytes((uint64_t)jnum(ct, "bytes"), a, sizeof a);
+            human_bytes((uint64_t)jnum(ct, "reclaimableBytes"), b, sizeof b);
+            printf("Containers:       %.0f, %s on disk, %s unused inside them\n", jnum(ct, "count"), a, b);
+        }
+        if (cJSON_IsObject(in)) {
+            const cJSON *at = obj(in, "lastScanAt");
+            if (cJSON_IsString(at))
+                printf("Integrity:        last scan %s, %.0f blocks verified, %.0f failures\n", at->valuestring,
+                       jnum(in, "verified"), jnum(in, "failures"));
+            else
+                printf("Integrity:        no scan yet\n");
+        }
+        if (cJSON_IsObject(cl)) {
+            const cJSON *next = obj(cl, "nextRunAt");
+            printf("Cleanup:          next nightly run %s\n", cJSON_IsString(next) ? next->valuestring : "not scheduled");
+        }
+    }
+    cJSON_Delete(j);
+    nx_response_free(&r);
+    return 0;
+}
+
 /* ===== main ================================================================================= */
 
 int main(int argc, char **argv)
@@ -725,6 +798,8 @@ int main(int argc, char **argv)
         rc = cmd_ls(&c, shared);
     else if (strcmp(cmd, "rm") == 0 && na == 2)
         rc = cmd_rm(&c, args[1]);
+    else if (strcmp(cmd, "stats") == 0 && na == 1)
+        rc = cmd_stats(&c);
     else {
         usage();
         rc = 2;

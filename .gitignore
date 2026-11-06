@@ -17,3 +17,4 @@ __pycache__/
 *.d
 *.tsbuildinfo
 server/tests/fixtures/data/
+nexusd.log
