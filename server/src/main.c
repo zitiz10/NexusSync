@@ -94,7 +94,15 @@ static int cmd_create_admin(const nx_config *cfg)
     }
     if (read_line("Display name (Enter for \"Lab Admin\"): ", display, sizeof display) != 0)
         return 1;
-    snprintf(u.display, sizeof u.display, "%s", display[0] ? display : "Lab Admin");
+    /* Check the length before copying: a silent snprintf truncation would
+     * accept an over-long name, and gcc rejects it under -Werror. */
+    const char *src = display[0] ? display : "Lab Admin";
+    size_t src_len = strlen(src);
+    if (src_len >= sizeof u.display) {
+        fprintf(stderr, "Display names are 1 to 64 characters.\n");
+        return 1;
+    }
+    memcpy(u.display, src, src_len + 1);
     if (!nx_display_valid(u.display)) {
         fprintf(stderr, "Display names are 1 to 64 characters.\n");
         return 1;

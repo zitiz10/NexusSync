@@ -571,9 +571,16 @@ static void *uploader(void *arg)
     while (!atomic_load(w->stop)) {
         int slot = (int)(nx_splitmix_next(&rng) % 8);
         if (mine[slot]) {
-            if (!read_matches(w->e, mine[slot], mine_data[slot], mine_len[slot]) ||
-                nx_engine_delete_file(w->e, mine[slot]) != 0)
+            if (!read_matches(w->e, mine[slot], mine_data[slot], mine_len[slot])) {
+                fprintf(stderr, "    uploader %d: read before delete failed (file %" PRIu64 ")\n", w->seed, mine[slot]);
                 w->errors++;
+            } else {
+                int drc = nx_engine_delete_file(w->e, mine[slot]);
+                if (drc != 0) {
+                    fprintf(stderr, "    uploader %d: delete failed rc=%d: %s\n", w->seed, drc, plat_last_error());
+                    w->errors++;
+                }
+            }
             mine[slot] = 0;
             free(mine_data[slot]);
             mine_data[slot] = NULL;
@@ -582,8 +589,13 @@ static void *uploader(void *arg)
             mine_data[slot] = nx_splitmix_bytes(nx_splitmix_next(&rng), mine_len[slot]);
             char name[32];
             snprintf(name, sizeof name, "w%d-%d", w->seed, slot);
-            if (put(w->e, name, mine_data[slot], mine_len[slot], &mine[slot]) != 0)
+            if (put(w->e, name, mine_data[slot], mine_len[slot], &mine[slot]) != 0) {
+                fprintf(stderr, "    uploader %d: upload failed: %s\n", w->seed, plat_last_error());
+                mine[slot] = 0;
+                free(mine_data[slot]);
+                mine_data[slot] = NULL;
                 w->errors++;
+            }
         }
         w->ops++;
     }
@@ -601,8 +613,10 @@ static void *reader(void *arg)
     size_t i = (size_t)w->seed;
     while (!atomic_load(w->stop)) {
         const tfile *f = &w->stable[i++ % w->nstable];
-        if (f->id && !read_matches(w->e, f->id, f->data, f->len))
+        if (f->id && !read_matches(w->e, f->id, f->data, f->len)) {
+            fprintf(stderr, "    reader %d: read failed (file %" PRIu64 "): %s\n", w->seed, f->id, plat_last_error());
             w->errors++;
+        }
         w->ops++;
     }
     return NULL;

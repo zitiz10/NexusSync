@@ -1153,17 +1153,19 @@ static int read_block(nx_engine *e, const nx_chunk_ref *c, uint8_t *buf, bool ve
     uint8_t stored_hash[32];
     bool corrupt = false;
     rc = nx_containers_read(e->ct, &loc, buf, NX_CHUNK_MAX_SIZE, stored_hash, &corrupt);
-    if (rc != 0) {
-        /* Compaction may have moved the block and deleted its old
-         * container between our lookup and the read (D-048): if the index
-         * now says somewhere else, read from there. */
+    /* Compaction may have moved the block and deleted its old container
+     * between our lookup and the read (D-048): if the index now says
+     * somewhere else, read from there. Back-to-back cleanups can move the
+     * same block again before we get there, so follow it a few times. */
+    for (int hop = 0; rc != 0 && hop < 4; hop++) {
         nx_index_entry now;
-        if (lookup(e, c->hash, &now, have_txn) == 0 &&
-            (now.container_id != ent.container_id || now.offset != ent.offset) && now.len == c->len) {
-            loc = (nx_block_loc){now.container_id, now.offset, now.len};
-            corrupt = false;
-            rc = nx_containers_read(e->ct, &loc, buf, NX_CHUNK_MAX_SIZE, stored_hash, &corrupt);
-        }
+        if (lookup(e, c->hash, &now, have_txn) != 0 ||
+            (now.container_id == ent.container_id && now.offset == ent.offset) || now.len != c->len)
+            break;
+        ent = now;
+        loc = (nx_block_loc){now.container_id, now.offset, now.len};
+        corrupt = false;
+        rc = nx_containers_read(e->ct, &loc, buf, NX_CHUNK_MAX_SIZE, stored_hash, &corrupt);
     }
     if (rc != 0)
         return corrupt ? NX_ENGINE_CORRUPT : -1;
