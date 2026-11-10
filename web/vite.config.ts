@@ -3,13 +3,16 @@ import react from '@vitejs/plugin-react';
 
 // Dev server on :5173 proxies the API and WebSocket to nexusd on :8080
 // (CLAUDE.md "Commands"). Production: nexusd serves web/dist itself.
+// NEXUS_API overrides the target, e.g. a demo server on another port.
+const api = process.env.NEXUS_API ?? 'http://127.0.0.1:8080';
+
 export default defineConfig({
   plugins: [react()],
   server: {
-    port: 5173,
+    port: Number(process.env.PORT ?? 5173),
     proxy: {
-      '/api': 'http://127.0.0.1:8080',
-      '/ws': { target: 'ws://127.0.0.1:8080', ws: true },
+      '/api': api,
+      '/ws': { target: api.replace(/^http/, 'ws'), ws: true },
     },
   },
   build: {
